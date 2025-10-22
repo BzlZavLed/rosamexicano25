@@ -3,6 +3,7 @@ import { fetchActivePromosFor, type Promo } from '../api/promocionescaja';
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import { cajaStatus, cajaOpen, cajaClose, findProduct, checkout, type CashMethod } from '../api/cashier';
+import { jsPDF } from 'jspdf';
 
 type Producto = {
     id: number;
@@ -69,7 +70,7 @@ async function applyPromotionsToRow(r: CartRow, proveedorIdent?: number) {
     const pctPromo = candidates.find(p => p.tipo === 'descuento' && (p.descuento ?? 0) > 0);
     const bundle = candidates.find(p => p.tipo === 'bundle' && (p.mincompra ?? 0) > 0 && (p.gratis ?? 0) > 0);
     let noteParts: string[] = [];
-   
+
     if (pctPromo?.descuento) {
         r.promoDiscountPct = Number(pctPromo.descuento) || 0;
         noteParts.push(`Descuento ${r.promoDiscountPct}%`);
@@ -307,6 +308,12 @@ async function onCheckout() {
             }
         };
         const res = await checkout(payload);
+        console.log('Venta realizada, idventaEST:', res);
+
+        if (res?.data.venta.idventa) {
+            console.log('Venta realizada, idventa:', res.idventa);
+            await makeReceiptPDFFromSale(res.idventa, { fecha: new Date().toISOString().slice(0,10) });
+        }
         message.value = 'Venta realizada con promociones aplicadas';
 
         cart.value = [];
@@ -322,34 +329,153 @@ async function onCheckout() {
 //descuentos
 // Promo discount amount per line
 function linePromoDiscount(r: CartRow) {
-  const percent = (r.promoDiscountPct ?? 0) / 100;
-  const percentDiscount = r.precio * r.qty * percent;
-  const bundleDiscount  = r.precio * (r.promoFreeQty ?? 0); // free units valued at unit price
-  return Math.round((percentDiscount + bundleDiscount) * 100) / 100;
+    const percent = (r.promoDiscountPct ?? 0) / 100;
+    const percentDiscount = r.precio * r.qty * percent;
+    const bundleDiscount = r.precio * (r.promoFreeQty ?? 0); // free units valued at unit price
+    return Math.round((percentDiscount + bundleDiscount) * 100) / 100;
 }
 
 // Sum of promo discounts
 const promoDiscountAmount = computed(() =>
-  Math.round(cart.value.reduce((sum, r) => sum + linePromoDiscount(r), 0) * 100) / 100
+    Math.round(cart.value.reduce((sum, r) => sum + linePromoDiscount(r), 0) * 100) / 100
 );
 
 // Your user-entered discount:
 const discountAmount = computed(() =>
-  Math.round((subTotal.value * (discountPercent.value || 0) / 100) * 100) / 100
+    Math.round((subTotal.value * (discountPercent.value || 0) / 100) * 100) / 100
 );
 
 // Merge: an equivalent global percent for backend
 const totalDiscountAmount = computed(() => discountAmount.value + promoDiscountAmount.value);
 const effectiveDiscountPercentForBE = computed(() => {
-  if (subTotal.value <= 0) return 0;
-  return Math.round((totalDiscountAmount.value / subTotal.value) * 10000) / 100; // 2 decimals
+    if (subTotal.value <= 0) return 0;
+    return Math.round((totalDiscountAmount.value / subTotal.value) * 10000) / 100; // 2 decimals
 });
 
 // Now recompute downstream totals using merged amount:
-const afterDiscount  = computed(() => Math.max(0, subTotal.value - totalDiscountAmount.value));
+const afterDiscount = computed(() => Math.max(0, subTotal.value - totalDiscountAmount.value));
 const surchargePercent = computed(() => paymentMethod.value === 'credit' ? 4.5 : 0);
-const surchargeAmount  = computed(() => Math.round((afterDiscount.value * surchargePercent.value / 100) * 100) / 100);
+const surchargeAmount = computed(() => Math.round((afterDiscount.value * surchargePercent.value / 100) * 100) / 100);
 const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.value) * 100) / 100);
+
+
+
+function money(n: number, currency = 'MXN', locale = 'es-MX') {
+    try { return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(n); }
+    catch { return `$${n.toFixed(2)}`; }
+}
+
+// same logic you already use to compute per-line promo discount:
+function linePromoDiscountPDF(r: CartRow) {
+    const percent = (r.promoDiscountPct ?? 0) / 100;
+    const percentDiscount = r.precio * r.qty * percent;
+    const bundleDiscount = r.precio * (r.promoFreeQty ?? 0);
+    return Math.round((percentDiscount + bundleDiscount) * 100) / 100;
+}
+
+async function makeReceiptPDFFromSale(idventa: number, opts?: { fecha?: string }) {
+    // pull data from your current reactive state
+    const rows = cart.value.slice(); // snapshot
+    const fecha = opts?.fecha ?? new Date().toISOString().slice(0, 10);
+
+    // totals you already compute:
+    const _subtotal = rows.reduce((s, r) => s + (r.precio * r.qty), 0);
+    const _promoDisc = rows.reduce((s, r) => s + linePromoDiscount(r), 0);      // promos (bundle + %)
+    const _manualDisc = Math.round((_subtotal * (discountPercent.value || 0) / 100) * 100) / 100;
+    const _afterDisc = Math.max(0, _subtotal - _promoDisc - _manualDisc);
+    const _surchargePct = (paymentMethod.value === 'credit') ? 4.5 : 0;
+    const _surcharge = Math.round((_afterDisc * _surchargePct / 100) * 100) / 100;
+    const _total = Math.round((_afterDisc + _surcharge) * 100) / 100;
+    const _received = paymentMethod.value === 'cash' ? Number(cashReceived.value ?? 0) : _total;
+    const _change = paymentMethod.value === 'cash' ? Math.max(0, Math.round((_received - _total) * 100) / 100) : 0;
+
+    const doc = new jsPDF({ unit: 'mm', format: 'a5' }); // small ticket; change to 'letter' if you prefer
+    let y = 12;
+
+    // Header
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+    doc.text('ROSAMEXICANO', 14, y); y += 6;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text(`Ticket #${idventa}`, 14, y); y += 5;
+    doc.text(`Fecha: ${fecha}`, 14, y); y += 5;
+    if (caja.value?.caja?.usuario) { doc.text(`Vendedor: ${caja.value.caja.usuario}`, 14, y); y += 6; }
+
+    // Table header
+    y += 2;
+    doc.setFont('helvetica', 'bold');
+    doc.text('Prod.', 14, y);
+    doc.text('Cant', 90, y, { align: 'right' });
+    doc.text('P.Unit', 120, y, { align: 'right' });
+    doc.text('Desc', 150, y, { align: 'right' });
+    doc.text('Importe', 190, y, { align: 'right' });
+    y += 2;
+    doc.setDrawColor(200); doc.line(14, y, 190, y);
+    y += 5;
+    doc.setFont('helvetica', 'normal');
+
+    // Lines
+    rows.forEach(r => {
+        const maxWidth = 70; // mm for product name column
+        const name = doc.splitTextToSize(r.nombre, maxWidth);
+        const lineDiscount = linePromoDiscount(r);
+        const lineGross = r.precio * r.qty;
+        const lineNet = Math.max(0, lineGross - lineDiscount);
+
+        // first line with numbers
+        doc.text(String(name[0]), 14, y);
+        doc.text(String(r.qty), 90, y, { align: 'right' });
+        doc.text(money(r.precio), 120, y, { align: 'right' });
+        doc.text(lineDiscount > 0 ? `-${money(lineDiscount)}` : '—', 150, y, { align: 'right' });
+        doc.text(money(lineNet), 190, y, { align: 'right' });
+        y += 5;
+
+        // wrap extra name lines
+        for (let i = 1; i < name.length; i++) {
+            doc.text(String(name[i]), 14, y);
+            y += 5;
+        }
+        // promo note
+        if (r.promoNote) {
+            doc.setTextColor(0, 128, 96);
+            doc.setFontSize(9);
+            doc.text(`• ${r.promoNote}`, 14, y);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(10);
+            y += 4;
+        }
+
+        // page break if very close to bottom
+        if (y > 260) { doc.addPage('a5', 'portrait'); y = 12; }
+    });
+
+    // Totals
+    y += 2; doc.line(14, y, 190, y); y += 5;
+    const row = (label: string, value: string, bold = false) => {
+        if (bold) { doc.setFont('helvetica', 'bold'); }
+        doc.text(label, 14, y);
+        doc.text(value, 190, y, { align: 'right' });
+        if (bold) { doc.setFont('helvetica', 'normal'); }
+        y += 6;
+    }
+    row('Subtotal', money(_subtotal));
+    if (_promoDisc) row('Promociones', `- ${money(_promoDisc)}`);
+    if (_manualDisc) row('Descuento manual', `- ${money(_manualDisc)}`);
+    if (_surcharge) row(`Recargo ${_surchargePct}%`, money(_surcharge));
+    row('Total', money(_total), true);
+
+    // Payment
+    y += 2; doc.line(14, y, 190, y); y += 6;
+    row('Método de pago', paymentMethod.value.toUpperCase());
+    row('Recibido', money(_received));
+    row('Cambio', money(_change));
+
+    y += 4;
+    doc.setFontSize(9);
+    doc.text('¡Gracias por su compra!', 100, y, { align: 'center' });
+
+    doc.save(`ticket_${idventa}.pdf`);
+}
+
 </script>
 
 <template>
@@ -361,7 +487,8 @@ const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.v
                 class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 flex items-center justify-between">
                 <div class="text-emerald-800 text-sm">
                     <b>Caja abierta</b>
-                    <span v-if="caja.caja?.saldoinicial"> · Saldo inicial: {{ currency(Number(caja.caja.saldoinicial)) }}</span>
+                    <span v-if="caja.caja?.saldoinicial"> · Saldo inicial: {{ currency(Number(caja.caja.saldoinicial))
+                        }}</span>
                     <span v-if="caja.caja?.usuario"> · Por: {{ caja.caja.usuario }}</span>
                 </div>
                 <div class="flex items-center gap-2">
@@ -423,9 +550,11 @@ const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.v
                                     <td class="px-3 py-2">{{ p.ident }}</td>
                                     <td class="px-3 py-2">{{ p.nombre }}</td>
                                     <td class="px-3 py-2 text-right">{{ new
-                                        Intl.NumberFormat('es-MX', { style:
-                                        'currency',currency:'MXN'}).format(Number(p.precio))
-                                        }}</td>
+                                        Intl.NumberFormat('es-MX', {
+                                            style:
+                                                'currency', currency: 'MXN'
+                                        }).format(Number(p.precio))
+                                    }}</td>
                                     <td class="px-3 py-2 text-right">{{ Number(p?.inventario?.existencia ?? 0) }}</td>
                                     <td class="px-3 py-2 text-right">
                                         <button @click="addToCart(p)"
@@ -477,8 +606,8 @@ const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.v
                                     </td>
                                     <td class="px-3 py-2 text-right">
                                         {{ new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' })
-                                        .format(r.precio * Math.max(0, r.qty - (r.promoFreeQty ?? 0)) * (1 -
-                                        (r.promoDiscountPct ?? 0)/100)) }}
+                                            .format(r.precio * Math.max(0, r.qty - (r.promoFreeQty ?? 0)) * (1 -
+                                                (r.promoDiscountPct ?? 0) / 100)) }}
                                     </td>
                                     <td class="px-3 py-2 text-right">
                                         <button @click="removeFromCart(r.ident)"
@@ -507,12 +636,12 @@ const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.v
                             <div class="flex justify-between"><span>Subtotal</span><b>{{ currency(subTotal) }}</b></div>
                             <div class="flex justify-between" v-if="promoDiscountAmount">
                                 <span>Promociones</span><b class="text-emerald-700">- {{ currency(promoDiscountAmount)
-                                    }}</b>
+                                }}</b>
                             </div>
                             <div class="flex justify-between"><span>Descuento manual</span><b>- {{
-                                    currency(discountAmount) }}</b></div>
+                                currency(discountAmount) }}</b></div>
                             <div class="flex justify-between"><span>Recargo {{ surchargePercent ?
-                                    `(${surchargePercent}%)` : '' }}</span><b>{{ currency(surchargeAmount) }}</b></div>
+                                `(${surchargePercent}%)` : '' }}</span><b>{{ currency(surchargeAmount) }}</b></div>
                             <div class="flex justify-between text-lg"><span>Total</span><b>{{ currency(total) }}</b>
                             </div>
                         </div>
