@@ -186,23 +186,32 @@ const cart = ref<CartRow[]>([]);
 async function addToCart(p: Producto) {
     SHOW_RESULTS.value = false;
     query.value = '';
+
     const row = cart.value.find(r => r.ident === p.ident);
     const max = Number(p?.inventario?.existencia ?? 0);
+
     if (row) {
         if (row.qty < max) row.qty++;
+        // re-run promos to catch bundle freebies (discount won't change, but fine)
         await applyPromotionsToRow(row, p.proveedorid);
         return;
     }
+
+    // Build the row but DO NOT insert yet
     const newRow: CartRow = {
         ident: p.ident,
         nombre: p.nombre,
         precio: Number(p.precio),
         existencia: max,
         qty: max > 0 ? 1 : 0,
-        proveedorid: p.proveedorid,     // 👈 keep provider
-};
-    cart.value.unshift(newRow);
+        proveedorid: p.proveedorid,
+    };
+
+    // Apply promos first so discount is present on first render
     await applyPromotionsToRow(newRow, p.proveedorid);
+
+    // Now insert already-annotated row
+    cart.value.unshift(newRow);
 }
 
 async function onQtyChange(r: CartRow, proveedorId?: number) {
