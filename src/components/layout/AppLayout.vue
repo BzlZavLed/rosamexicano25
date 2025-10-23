@@ -9,7 +9,7 @@ const isAdmin = computed(() => auth.isAdmin);
 const isProvider = computed(() => auth.isProvider);
 const drawerOpen = ref(false);
 
-function toggle() { drawerOpen.value = !drcccawerOpen.value; }
+function toggle() { drawerOpen.value = !drawerOpen.value; }
 async function logout() { await auth.logout(); window.location.href = '/login'; }
 </script>
 

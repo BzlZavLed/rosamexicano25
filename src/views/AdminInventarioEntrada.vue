@@ -10,6 +10,7 @@ import JsBarcode from 'jsbarcode';
 
 type PickedProduct = Producto & {
     proveedor_nombre?: string;
+    proveedor: { id: number; nombre: string };
     inventario?: {
         id?: number;
         existencia?: number | string;

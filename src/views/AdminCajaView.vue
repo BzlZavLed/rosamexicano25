@@ -47,6 +47,9 @@ const loading = ref(false);
 const saving = ref(false);
 const message = ref('');
 const error = ref('');
+const ALERT_TIMEOUT_MS = 5000;
+let messageTimer: number | undefined;
+let errorTimer: number | undefined;
 
 const caja = ref<{ open: boolean; caja: any | null }>({ open: false, caja: null });
 
@@ -156,6 +159,41 @@ function currency(amount: number, currencyCode = 'MXN', locale = 'es-MX') {
     }
 }
 
+/** Utility helpers to manage transient success/error banners. */
+function clearMessage() {
+    if (messageTimer) clearTimeout(messageTimer);
+    messageTimer = undefined;
+    message.value = '';
+}
+
+function clearError() {
+    if (errorTimer) clearTimeout(errorTimer);
+    errorTimer = undefined;
+    error.value = '';
+}
+
+function resetAlerts() {
+    clearMessage();
+    clearError();
+}
+
+function showMessage(text: string) {
+    clearMessage();
+    message.value = text;
+    messageTimer = window.setTimeout(() => {
+        clearMessage();
+    }, ALERT_TIMEOUT_MS);
+}
+
+function showError(text: string) {
+    clearError();
+    error.value = text;
+    errorTimer = window.setTimeout(() => {
+        error.value = '';
+        errorTimer = undefined;
+    }, ALERT_TIMEOUT_MS);
+}
+
 async function getPromosForRow(row: CartRow, proveedorIdent?: number) {
     if (promoCache.has(row.ident)) return promoCache.get(row.ident)!;
     const promos = await fetchActivePromosFor(row.ident, proveedorIdent);
@@ -213,14 +251,14 @@ async function applyPromotionsToRow(row: CartRow, proveedorIdent?: number) {
 async function doSearch() {
     if (!query.value) { results.value = []; return; }
     loading.value = true;
-    error.value = '';
+    clearError();
     try {
         const isBarcode = /^\d+$/.test(query.value.trim());
         const data = await findProduct(isBarcode ? { barcode: Number(query.value) } : { search: query.value, per_page: 20 });
         results.value = data;
         SHOW_RESULTS.value = true;
     } catch (e: any) {
-        error.value = e?.response?.data?.message || 'No se pudo buscar';
+        showError(e?.response?.data?.message || 'No se pudo buscar');
     } finally {
         loading.value = false;
     }
@@ -340,19 +378,19 @@ async function refreshCaja() {
 
 /** Opens the cash drawer with an initial balance. */
 async function openCaja() {
-    error.value = '';
-    message.value = '';
+    resetAlerts();
     if (openAmount.value == null || openAmount.value < 0) {
-        error.value = 'Saldo inicial inválido';
+        showError('Saldo inicial inválido');
         return;
     }
     saving.value = true;
     try {
         await cajaOpen({ saldoinicial: Number(openAmount.value) });
-        message.value = 'Caja abierta';
+        clearError();
+        showMessage('Caja abierta');
         await refreshCaja();
     } catch (e: any) {
-        error.value = e?.response?.data?.message || 'No se pudo abrir caja';
+        showError(e?.response?.data?.message || 'No se pudo abrir caja');
     } finally {
         saving.value = false;
     }
@@ -360,16 +398,16 @@ async function openCaja() {
 
 /** Closes the cash drawer sending the optional counted final balance. */
 async function closeCaja() {
-    error.value = '';
-    message.value = '';
+    resetAlerts();
     saving.value = true;
     try {
         const payload = closeAmount.value != null ? { saldofinal: Number(closeAmount.value) } : undefined;
         await cajaClose(payload);
-        message.value = 'Caja cerrada';
+        clearError();
+        showMessage('Caja cerrada');
         await refreshCaja();
     } catch (e: any) {
-        error.value = e?.response?.data?.message || 'No se pudo cerrar caja';
+        showError(e?.response?.data?.message || 'No se pudo cerrar caja');
     } finally {
         saving.value = false;
     }
@@ -419,13 +457,14 @@ async function submitExpense() {
     expenseSaving.value = true;
     try {
         await registerExpense(payload);
-        error.value = '';
-        message.value = 'Egreso registrado';
+        clearError();
+        showMessage('Egreso registrado');
         showExpenseModal.value = false;
         resetExpenseForm();
         await refreshCaja();
     } catch (e: any) {
         expenseError.value = e?.response?.data?.message || 'No se pudo registrar el egreso';
+        showError(expenseError.value);
     } finally {
         expenseSaving.value = false;
     }
@@ -433,23 +472,22 @@ async function submitExpense() {
 
 /** Sends the sale to the backend and resets local cart state upon success. */
 async function onCheckout() {
-    error.value = '';
-    message.value = '';
+    resetAlerts();
     if (!caja.value.open) {
-        error.value = 'Abre caja antes de vender';
+        showError('Abre caja antes de vender');
         return;
     }
 
     const items = cart.value.filter(row => row.qty > 0).map(row => ({ ident: row.ident, qty: row.qty }));
     if (!items.length) {
-        error.value = 'Carrito vacío';
+        showError('Carrito vacío');
         return;
     }
 
     if (paymentMethod.value === 'efectivo') {
         const received = Number(cashReceived.value ?? 0);
         if (received < total.value) {
-            error.value = 'Efectivo recibido insuficiente';
+            showError('Efectivo recibido insuficiente');
             return;
         }
     }
@@ -472,14 +510,15 @@ async function onCheckout() {
         if (ventaId) {
             await makeReceiptPDFFromSale(ventaId, { fecha: new Date().toISOString().slice(0, 10) });
         }
-        message.value = 'Venta realizada con promociones aplicadas';
+        clearError();
+        showMessage('Venta realizada con promociones aplicadas');
 
         cart.value = [];
         discountPercent.value = 0;
         cashReceived.value = null;
         await refreshCaja();
     } catch (e: any) {
-        error.value = e?.response?.data?.message || 'No se pudo terminar la venta';
+        showError(e?.response?.data?.message || 'No se pudo terminar la venta');
     } finally {
         saving.value = false;
     }
@@ -633,6 +672,8 @@ onMounted(async () => {
 onUnmounted(() => {
     if (searchTimer) clearTimeout(searchTimer);
     if (scanTimer) clearTimeout(scanTimer);
+    if (messageTimer) clearTimeout(messageTimer);
+    if (errorTimer) clearTimeout(errorTimer);
     window.removeEventListener('keydown', handleKeydown);
 });
 </script>

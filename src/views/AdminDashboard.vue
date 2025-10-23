@@ -3,12 +3,6 @@
 <script setup lang="ts">
 import AppLayout from '../components/layout/AppLayout.vue';
 
-import { useAuthStore } from '../stores/auth';
-import { useRouter } from 'vue-router';
-import { logout } from '../api/auth';
-const auth = useAuthStore();
-const router = useRouter();
-async function doLogout() { await logout(); auth.logout(); router.push({ name: 'login' }); }
 </script>
 
 <template>

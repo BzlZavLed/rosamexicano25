@@ -2,7 +2,7 @@
 import { ref, reactive, onMounted, watch } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import {
-    listProveedores, getProveedor, createProveedor, updateProveedor, deleteProveedor, type Proveedor
+    listProveedores, createProveedor, updateProveedor, deleteProveedor, type Proveedor
 } from '../api/proveedores';
 
 const loading = ref(false);
@@ -60,7 +60,7 @@ function resetForm() {
 async function loadList() {
     loading.value = true;
     try {
-        const data = await listProveedores(q.value ? { q: q.value, page: 1, per_page: 20 } : undefined);
+        const data = await listProveedores(q.value ? { search: q.value, page: 1, per_page: 20 } : undefined);
         proveedores.value = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
     } catch (e: any) {
         error.value = e?.response?.data?.message || 'Error listando proveedores';

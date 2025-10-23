@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import {
-    listProductos, getProducto, createProducto, updateProducto, deleteProducto,
+    listProductos, createProducto, updateProducto, deleteProducto,
     listProveedores, setStock, bulkUploadCSV, type Producto, type Proveedor
 } from '../api/products';
 
@@ -107,7 +107,7 @@ function printLabels() {
     if (!form.ident) { error.value = 'Falta identificador interno'; return; }
 
     const pagesToPrint = Math.max(1, Number(copies.value || 1)); // pages, not labels
-    const { rows, cols } = parseGrid(gridPreset.value);
+    const { rows = 1, cols = 1 } = parseGrid(gridPreset.value) ?? {};
     const box = computeLabelBox(rows, cols);
 
     const doc = new jsPDF({ unit: 'mm', format: PAGE.format });
@@ -201,7 +201,7 @@ function resetForm() {
 async function loadList() {
     loading.value = true;
     try {
-        const data = await listProductos(q.value ? { q: q.value, page: 1, per_page: 20 } : undefined);
+        const data = await listProductos(q.value ? { search: q.value, page: 1, per_page: 20 } : undefined);
         productos.value = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
     } catch (e: any) {
         error.value = e?.response?.data?.message || 'Error listando productos';
@@ -212,7 +212,13 @@ async function loadList() {
 async function loadProveedores() {
     try {
         const resp = await listProveedores();
-        proveedores.value = Array.isArray(resp) ? resp : resp.data;
+        if (Array.isArray(resp)) {
+            proveedores.value = resp;
+        } else if (resp && Array.isArray((resp as { data?: unknown }).data)) {
+            proveedores.value = (resp as { data: Proveedor[] }).data;
+        } else {
+            proveedores.value = [];
+        }
     } catch { /* ignore */ }
 }
 async function selectRow(p: Producto) {
@@ -305,7 +311,6 @@ async function uploadCSV() {
 }
 
 /* ---------- barcode preview (svg) ---------- */
-const identText = computed(() => (form.ident ?? '').toString());
 
 watch(q, () => loadList());
 watch(() => form.ident, () => { renderBarcode(); });
