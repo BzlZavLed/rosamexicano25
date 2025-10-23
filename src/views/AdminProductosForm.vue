@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted, computed } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import {
     listProductos, createProducto, updateProducto, deleteProducto,
     listProveedores, setStock, bulkUploadCSV, type Producto, type Proveedor
 } from '../api/products';
+import http from '../api/http';
 
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
@@ -19,6 +20,12 @@ function formatMoney(n?: number, currency = 'MXN', locale = 'es-MX') {
     if (typeof n !== 'number') return '';
     try { return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(n); }
     catch { return `$${n.toFixed(2)}`; }
+}
+
+function displayMoney(value?: number | string | null) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '$0.00';
+    return formatMoney(numeric);
 }
 
 /** Page setup: Letter portrait (change to A4 if you prefer) */
@@ -146,6 +153,17 @@ const q = ref('');
 const productos = ref<Producto[]>([]);
 const selectedId = ref<number | null>(null);
 const proveedores = ref<Proveedor[]>([]);
+const pagination = reactive({ page: 1, perPage: 20, lastPage: 1, total: 0 });
+const pageNumbers = computed(() => {
+    const pages = Math.max(1, pagination.lastPage || 1);
+    return Array.from({ length: pages }, (_, idx) => idx + 1);
+});
+const pageInfo = computed(() => {
+    if (!pagination.total) return null;
+    const start = (pagination.page - 1) * pagination.perPage + 1;
+    const end = Math.min(start + pagination.perPage - 1, pagination.total);
+    return { start, end };
+});
 
 type FormT = {
     id?: number | null;
@@ -200,9 +218,27 @@ function resetForm() {
 }
 async function loadList() {
     loading.value = true;
+    error.value = '';
     try {
-        const data = await listProductos(q.value ? { search: q.value, page: 1, per_page: 20 } : undefined);
-        productos.value = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+        const params: Record<string, any> = {
+            page: pagination.page,
+            per_page: pagination.perPage
+        };
+        if (q.value) params.search = q.value;
+        const resp = await listProductos(params);
+        const rows = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+        productos.value = rows;
+
+        const meta = resp?.meta ?? null;
+        const total = meta?.total ?? resp?.total ?? rows.length;
+        const lastPage = meta?.last_page ?? meta?.lastPage ?? (total ? Math.ceil(total / pagination.perPage) : 1);
+
+        pagination.total = total;
+        pagination.lastPage = Math.max(1, lastPage || 1);
+
+        if (pagination.page > pagination.lastPage) {
+            pagination.page = pagination.lastPage;
+        }
     } catch (e: any) {
         error.value = e?.response?.data?.message || 'Error listando productos';
     } finally {
@@ -296,6 +332,7 @@ async function remove() {
 
 /* ---------- CSV Upload ---------- */
 const csvFile = ref<File | null>(null);
+const downloadingTemplate = ref(false);
 async function uploadCSV() {
     if (!csvFile.value) return;
     saving.value = true; error.value = ''; message.value = '';
@@ -310,9 +347,63 @@ async function uploadCSV() {
     }
 }
 
+async function downloadTemplate() {
+    downloadingTemplate.value = true;
+    error.value = '';
+    try {
+        const res = await http.get('/productos/bulk-template', { responseType: 'blob' });
+        const blob = new Blob([res.data], { type: res.headers['content-type'] || 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const disposition = res.headers['content-disposition'];
+        let filename = 'productos_template.csv';
+        if (disposition) {
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            if (match?.[1]) filename = match[1];
+        }
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        message.value = 'Plantilla descargada';
+    } catch (e: any) {
+        error.value = e?.response?.data?.message || 'No se pudo descargar la plantilla';
+    } finally {
+        downloadingTemplate.value = false;
+    }
+}
+
+function goToPage(page: number) {
+    const target = Math.max(1, Math.min(page, pagination.lastPage || 1));
+    if (target === pagination.page) return;
+    pagination.page = target;
+}
+
+function goToPrevPage() {
+    goToPage(pagination.page - 1);
+}
+
+function goToNextPage() {
+    goToPage(pagination.page + 1);
+}
+
 /* ---------- barcode preview (svg) ---------- */
 
-watch(q, () => loadList());
+watch(q, () => {
+    pagination.page = 1;
+    loadList();
+});
+watch(() => pagination.perPage, (newVal, oldVal) => {
+    if (newVal === oldVal) return;
+    pagination.page = 1;
+    loadList();
+});
+watch(() => pagination.page, (newVal, oldVal) => {
+    if (newVal === oldVal) return;
+    loadList();
+});
 watch(() => form.ident, () => { renderBarcode(); });
 
 onMounted(async () => {
@@ -491,7 +582,7 @@ onMounted(async () => {
                                 <td class="px-3 py-2">{{ p.id }}</td>
                                 <td class="px-3 py-2">{{ p.ident }}</td>
                                 <td class="px-3 py-2">{{ p.nombre }}</td>
-                                <td class="px-3 py-2 text-right">{{ Number(p.precio).toFixed(2) }}</td>
+                                <td class="px-3 py-2 text-right">{{ displayMoney(p.precio) }}</td>
                             </tr>
                             <tr v-if="!loading && productos.length === 0">
                                 <td colspan="4" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
@@ -502,11 +593,57 @@ onMounted(async () => {
                         </tbody>
                     </table>
                 </div>
+                <div
+                    class="flex flex-col gap-3 py-3 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span>Filas por página:</span>
+                        <select v-model.number="pagination.perPage"
+                            class="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:border-gray-900 focus:ring-gray-900">
+                            <option v-for="option in [10, 20, 50, 100]" :key="option" :value="option">{{ option }}</option>
+                        </select>
+                        <span v-if="pageInfo">Mostrando {{ pageInfo.start }} – {{ pageInfo.end }} de {{
+                            pagination.total }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click="goToPrevPage" :disabled="pagination.page <= 1"
+                            class="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50">
+                            Anterior
+                        </button>
+                        <select v-model.number="pagination.page"
+                            class="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:border-gray-900 focus:ring-gray-900">
+                            <option v-for="pageNumber in pageNumbers" :key="pageNumber" :value="pageNumber">
+                                Página {{ pageNumber }}
+                            </option>
+                        </select>
+                        <button @click="goToNextPage" :disabled="pagination.page >= pagination.lastPage"
+                            class="rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50">
+                            Siguiente
+                        </button>
+                    </div>
+                </div>
             </div>
 
             <!-- ===== CSV UPLOAD ===== -->
             <div class="mt-8 space-y-2">
                 <label class="block text-sm font-medium text-gray-700">Subir archivo de productos (CSV)</label>
+                <div class="flex items-center justify-between gap-3">
+                    <span class="text-xs text-gray-500">Descarga la plantilla, captura tus productos y súbela como CSV.</span>
+                    <button type="button" @click="downloadTemplate" :disabled="downloadingTemplate"
+                        class="inline-flex items-center justify-center rounded-lg border px-2.5 py-2 text-sm hover:bg-gray-50 disabled:opacity-60 transition"
+                        aria-label="Descargar plantilla CSV">
+                        <svg v-if="!downloadingTemplate" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"
+                            class="h-4 w-4 text-gray-700">
+                            <path fill="currentColor"
+                                d="M10 2a.75.75 0 0 1 .75.75v8.69l2.47-2.47a.75.75 0 0 1 1.06 1.06l-3.75 3.75a.75.75 0 0 1-1.06 0L6.72 10.03a.75.75 0 1 1 1.06-1.06l2.47 2.47V2.75A.75.75 0 0 1 10 2ZM4.5 12.5a.75.75 0 0 1 .75.75v1.5c0 .69.56 1.25 1.25 1.25h7c.69 0 1.25-.56 1.25-1.25v-1.5a.75.75 0 0 1 1.5 0v1.5A2.75 2.75 0 0 1 13.5 17h-7A2.75 2.75 0 0 1 3.75 14.75v-1.5a.75.75 0 0 1 .75-.75Z" />
+                        </svg>
+                        <svg v-else xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                            class="h-4 w-4 animate-spin text-gray-500" aria-hidden="true">
+                            <path fill="currentColor"
+                                d="M12 2a1 1 0 0 1 1 1v2.05a1 1 0 0 1-2 0V3a1 1 0 0 1 1-1Zm6.36 3.64a1 1 0 0 1 0 1.41l-1.45 1.45a1 1 0 1 1-1.41-1.41l1.45-1.45a1 1 0 0 1 1.41 0ZM21 11a1 1 0 1 1 0 2h-2.05a1 1 0 0 1 0-2H21ZM8.5 6.09a1 1 0 0 1-1.41 1.41L5.64 6.05A1 1 0 1 1 7.05 4.64L8.5 6.09ZM7 11a1 1 0 0 1 1 1H7Zm1 0a1 1 0 0 1 2 0H8Zm2 0a1 1 0 0 1 2 0h-2Zm2 0a1 1 0 0 1 2 0h-2Zm2 0a1 1 0 0 1 2 0h-2Z" />
+                        </svg>
+                        <span class="sr-only">{{ downloadingTemplate ? 'Descargando plantilla CSV' : 'Descargar plantilla CSV' }}</span>
+                    </button>
+                </div>
                 <input type="file" accept=".csv"
                     @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] || null"
                     class="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border file:border-gray-300 file:bg-white file:px-3 file:py-2 file:text-sm hover:file:bg-gray-50" />
