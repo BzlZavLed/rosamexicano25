@@ -14,9 +14,9 @@ const AdminCajaView = () => import("../views/AdminCajaView.vue");
 
 
 const routes: RouteRecordRaw[] = [
-    { path: "/", redirect: "/login" },
+    { path: "/", redirect: "/auth" },
     {
-        path: "/login",
+        path: "/auth",
         name: "login",
         component: LoginView,
         meta: { public: true },
@@ -27,6 +27,7 @@ const routes: RouteRecordRaw[] = [
         path: "/dashboard",
         name: "admin-dashboard",
         component: AdminDashboard,
+        alias: "/login",
         meta: { requiresAuth: true, role: "admin" },
     },
 
