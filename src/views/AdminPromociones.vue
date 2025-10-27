@@ -201,6 +201,9 @@ async function removePromo() {
 const tipoIsDescuento = computed(() => form.tipo === 'descuento');
 const tipoIsGratis = computed(() => form.tipo === 'bundle');
 
+const tipoLabel = (tipo: PromoTipo) =>
+    tipo === 'bundle' ? 'Producto gratis' : 'Descuento (%)';
+
 onMounted(async () => {
     await Promise.all([loadPromos(), loadLists()]);
 });
@@ -208,33 +211,64 @@ onMounted(async () => {
 
 <template>
     <AppLayout>
-        <div class="bg-white border border-gray-200 rounded-xl shadow p-6">
-            <h2 class="text-2xl font-semibold mb-6">Promociones</h2>
-
-            <!-- alerts -->
-            <div v-if="message"
-                class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 px-4 py-2 text-sm">{{
-                message }}</div>
-            <div v-if="error" class="mb-4 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-4 py-2 text-sm">
-                {{ error }}</div>
-
-            <!-- ===== FORM ===== -->
-            <div class="space-y-5">
-                <!-- Target & tipo -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <!-- target -->
+        <div class="space-y-6">
+            <!-- Form section -->
+            <section class="bg-white border border-gray-200 rounded-xl shadow-sm p-5 md:p-6 space-y-5">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Aplica a</label>
+                        <h2 class="text-xl font-semibold">Promociones</h2>
+                        <p class="text-xs text-gray-500 mt-1">Configura promociones por producto o proveedor y define
+                            la
+                            vigencia.</p>
+                    </div>
+                    <button type="button" @click="resetForm"
+                        class="inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium uppercase tracking-wide hover:bg-gray-50">
+                        Limpiar formulario
+                    </button>
+                </div>
+
+                <div v-if="message"
+                    class="rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 px-4 py-2 text-sm">
+                    {{ message }}
+                </div>
+                <div v-if="error"
+                    class="rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-4 py-2 text-sm">
+                    {{ error }}
+                </div>
+
+                <!-- Target & tipo -->
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Aplica a</label>
                         <select v-model="form.target"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
                             <option value="producto">Producto</option>
                             <option value="proveedor">Proveedor</option>
                         </select>
+                        <p class="text-xs text-gray-500">Define si la promoción se asigna a un producto específico o a
+                            todos los productos del proveedor.</p>
                     </div>
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Tipo de promoción</label>
+                        <select v-model="form.tipo"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
+                            <option value="descuento">Descuento (%)</option>
+                            <option value="bundle">Producto gratis (3x2, 2x1…)</option>
+                        </select>
+                        <p class="text-xs text-gray-500">Selecciona si es un descuento directo o una promoción tipo
+                            bundle.</p>
+                    </div>
+                    <label class="flex items-center gap-2 px-3 py-2 text-sm">
+                        <input type="checkbox" v-model="form.estado"
+                            class="rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                        Promoción activa
+                    </label>
+                </div>
 
-                    <!-- Producto autocomplete -->
-                    <div v-if="form.target === 'producto'" class="md:col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Producto</label>
+                <!-- Producto / proveedor selection -->
+                <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div v-if="form.target === 'producto'" class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Producto</label>
                         <AutocompleteRemote
                             :fetcher="async (q:string)=>({ items: await fetchProductosBySearch(q) })"
                             :labelKey="(it:any)=> it._label"
@@ -246,13 +280,11 @@ onMounted(async () => {
                             @update:modelValue="(v:any)=> form.producto = v"
                             @update:modelText="(t:string)=> productoText = t"
                             @select="(it:any)=> { form.producto = it._value; productoText = it._label; }"
-                            />
-                        <p class="text-xs text-gray-500 mt-1">Se guardará el <b>ident</b> del producto.</p>
+                        />
+                        <p class="text-xs text-gray-500">Se guardará el <b>ident</b> del producto.</p>
                     </div>
-                    <!-- Proveedor autocomplete -->
-
-                    <div v-if="form.target === 'proveedor'" class="md:col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Proveedor</label>
+                    <div v-if="form.target === 'proveedor'" class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Proveedor</label>
                         <AutocompleteRemote
                             :fetcher="async (q:string)=>({ items: await fetchProveedoresBySearch(q) })"
                             :labelKey="(it:any)=> it._label"
@@ -265,64 +297,52 @@ onMounted(async () => {
                             @update:modelText="(t:string)=> proveedorText = t"
                             @select="(it:any)=> { form.proveedor = it._value; proveedorText = it._label; }"
                         />
-                        <p class="text-xs text-gray-500 mt-1">Se guardará el <b>ident</b> del proveedor.</p>
-                    </div>
-
-                    <!-- tipo -->
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Tipo de promoción</label>
-                        <select v-model="form.tipo"
-                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
-                            <option value="descuento">Descuento (%)</option>
-                            <option value="bundle">Producto gratis (3x2, 2x1…)</option>
-                        </select>
+                        <p class="text-xs text-gray-500">Se guardará el <b>ident</b> del proveedor.</p>
                     </div>
                 </div>
 
                 <!-- Campos según tipo -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div v-if="tipoIsDescuento">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Descuento (%)</label>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div v-if="tipoIsDescuento" class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Descuento (%)</label>
                         <input v-model.number="form.descuento" type="number" min="0" max="100" step="0.01"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
                             placeholder="Ej. 20" />
                     </div>
-
-                    <div v-if="tipoIsGratis">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Mínimo de compra</label>
+                    <div v-if="tipoIsGratis" class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Mínimo de compra</label>
                         <input v-model.number="form.mincompra" type="number" min="1" step="1"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
                             placeholder="Ej. 2 (para 3x2)" />
                     </div>
-
-                    <div v-if="tipoIsGratis">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Gratis</label>
+                    <div v-if="tipoIsGratis" class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Gratis</label>
                         <input v-model.number="form.gratis" type="number" min="1" step="1"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
                             placeholder="Ej. 1 (para 3x2)" />
                     </div>
                 </div>
 
-                <!-- fechas & estado -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Fecha de inicio</label>
+                <!-- fechas -->
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Fecha de inicio</label>
                         <input v-model="form.inicia" type="date"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Fecha de vencimiento</label>
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Fecha de vencimiento</label>
                         <input v-model="form.vence" type="date"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
                     </div>
-                    <label class="inline-flex items-center gap-2 mt-7">
-                        <input type="checkbox" v-model="form.estado"
-                            class="rounded border-gray-300 text-gray-900 focus:ring-gray-900">
-                        Activa
-                    </label>
+                    <div class="space-y-1 text-xs text-gray-500">
+                        <span class="font-medium text-gray-700">Resumen</span>
+                        <p class="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                            {{ form.target === 'producto' ? 'Promoción aplicada a producto.' : 'Promoción aplicada a proveedor.' }}
+                        </p>
+                    </div>
                 </div>
 
-                <!-- actions -->
                 <div class="flex flex-wrap gap-2">
                     <button :disabled="saving" @click="submit"
                         class="rounded-lg bg-[#E4007C] hover:bg-[#cc006f] text-white px-4 py-2 text-sm disabled:opacity-60">
@@ -337,25 +357,38 @@ onMounted(async () => {
                         Limpiar
                     </button>
                 </div>
-            </div>
+            </section>
 
-            <!-- ===== LIST ===== -->
-            <div class="mt-10">
-                <div class="flex flex-wrap items-center gap-3 mb-3">
-                    <div class="grow">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Buscar</label>
+            <!-- List section -->
+            <section class="bg-white border border-gray-200 rounded-xl shadow-sm p-5 md:p-6 space-y-4">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h3 class="text-lg font-semibold text-gray-900">Listado de promociones</h3>
+                        <p class="text-xs text-gray-500">Haz clic para editar una promoción existente.</p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <label class="inline-flex items-center gap-2 text-sm text-gray-600">
+                            <input type="checkbox" v-model="activaOnly"
+                                class="rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                            Solo activas
+                        </label>
+                    </div>
+                </div>
+
+                <div class="grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Buscar</label>
                         <input v-model="search" type="text" placeholder="Producto/proveedor…"
                             class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
                     </div>
-                    <label class="inline-flex items-center gap-2 mt-6">
-                        <input type="checkbox" v-model="activaOnly"
-                            class="rounded border-gray-300 text-gray-900 focus:ring-gray-900">
-                        Solo activas (vigentes)
-                    </label>
+                    <div class="hidden sm:flex items-end text-xs text-gray-500">
+                        {{ promos.length }} resultados
+                    </div>
                 </div>
 
-                <div class="max-h-[420px] overflow-auto border border-gray-200 rounded-lg">
-                    <table class="min-w-full text-sm">
+                <div class="border border-gray-200 rounded-lg overflow-hidden">
+                    <!-- Desktop table -->
+                    <table class="hidden min-w-full text-sm md:table">
                         <thead class="bg-gray-50 text-gray-500">
                             <tr>
                                 <th class="text-left font-medium px-3 py-2">ID</th>
@@ -373,19 +406,19 @@ onMounted(async () => {
                         </thead>
                         <tbody>
                             <tr v-for="p in promos" :key="p.id" @click="selectRow(p)"
-                                :class="['cursor-pointer hover:bg-gray-50', selectedId === p.id ? 'bg-gray-100' : '']">
+                                :class="['cursor-pointer hover:bg-gray-50 transition', selectedId === p.id ? 'bg-gray-100' : '']">
                                 <td class="px-3 py-2">{{ p.id }}</td>
                                 <td class="px-3 py-2">
                                     <div class="text-gray-900">{{ p.producto ?? '—' }}</div>
-                                    <div v-if="p.producto_nombre" class="text-xs text-gray-500">{{ p.producto_nombre }}
-                                    </div>
+                                    <div v-if="p.producto_nombre" class="text-xs text-gray-500">{{ p.producto_nombre
+                                        }}</div>
                                 </td>
                                 <td class="px-3 py-2">
                                     <div class="text-gray-900">{{ p.proveedor ?? '—' }}</div>
                                     <div v-if="p.proveedor_nombre" class="text-xs text-gray-500">{{ p.proveedor_nombre
                                         }}</div>
                                 </td>
-                                <td class="px-3 py-2 capitalize">{{ p.tipo }}</td>
+                                <td class="px-3 py-2 capitalize">{{ tipoLabel(p.tipo as PromoTipo) }}</td>
                                 <td class="px-3 py-2">{{ p.descuento ?? '—' }}</td>
                                 <td class="px-3 py-2">{{ p.mincompra ?? '—' }}</td>
                                 <td class="px-3 py-2">{{ p.gratis ?? '—' }}</td>
@@ -402,8 +435,40 @@ onMounted(async () => {
                             </tr>
                         </tbody>
                     </table>
+
+                    <!-- Mobile cards -->
+                    <div class="md:hidden divide-y divide-gray-100 max-h-[360px] overflow-auto">
+                        <button v-for="p in promos" :key="p.id" @click="selectRow(p)"
+                            class="w-full text-left p-3 space-y-2 transition hover:bg-gray-50"
+                            :class="selectedId === p.id ? 'bg-gray-100' : 'bg-white'">
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-semibold text-gray-800">Promo #{{ p.id }}</span>
+                                <span class="text-xs text-gray-500">{{ p.vence || 'Sin vencimiento' }}</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
+                                <div><span class="font-medium text-gray-700">Producto:</span> {{
+                                    p.producto_nombre ||
+                                    p.producto || '—' }}</div>
+                                <div><span class="font-medium text-gray-700">Proveedor:</span> {{
+                                    p.proveedor_nombre || p.proveedor || '—' }}</div>
+                                <div><span class="font-medium text-gray-700">Tipo:</span> {{
+                                    tipoLabel(p.tipo as PromoTipo) }}</div>
+                                <div><span class="font-medium text-gray-700">Estado:</span> {{
+                                    p.estado ? 'Activa' : 'Inactiva' }}</div>
+                                <div><span class="font-medium text-gray-700">Descuento:</span> {{
+                                    p.descuento ?? '—' }}</div>
+                                <div><span class="font-medium text-gray-700">Bundle:</span> {{
+                                    p.mincompra && p.gratis ? `${p.mincompra} x ${Number(p.mincompra) + Number(p.gratis)}` : '—'
+                                    }}</div>
+                            </div>
+                        </button>
+                        <div v-if="!loading && promos.length === 0" class="p-4 text-center text-sm text-gray-500">
+                            Sin resultados
+                        </div>
+                        <div v-if="loading" class="p-4 text-center text-sm text-gray-500">Cargando…</div>
+                    </div>
                 </div>
-            </div>
+            </section>
         </div>
     </AppLayout>
 </template>
