@@ -4,7 +4,7 @@
  * It centralizes cart management, promotions, checkout, and manual expense logging.
  */
 import { fetchActivePromosFor, type Promo } from '../api/promocionescaja';
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import {
     cajaStatus,
@@ -12,10 +12,12 @@ import {
     cajaClose,
     findProduct,
     checkout,
+    sendSaleTicket,
     registerExpense,
     type CashMethod,
     type CashMovementPayload
 } from '../api/cashier';
+import { searchClientes, createCliente, type Cliente } from '../api/clientes';
 import { jsPDF } from 'jspdf';
 
 type Producto = {
@@ -40,6 +42,23 @@ type CartRow = {
     promoDiscountPct?: number;
     promoFreeQty?: number;
     promoNote?: string;
+};
+
+type SaleSnapshot = {
+    idventa: number;
+    fecha: string;
+    rows: CartRow[];
+    subtotal: number;
+    promoDiscount: number;
+    manualDiscount: number;
+    totalDiscount: number;
+    afterDiscount: number;
+    surchargePercent: number;
+    surchargeAmount: number;
+    total: number;
+    paymentMethod: CashMethod;
+    cashReceived: number;
+    change: number;
 };
 
 // Reactive state -------------------------------------------------
@@ -73,6 +92,21 @@ const expenseForm = reactive({
     total: null as number | null,
     fecha: todayISO(),
 });
+
+const lastSaleSnapshot = ref<SaleSnapshot | null>(null);
+const showTicketModal = ref(false);
+const ticketSendChannel = ref<'email' | 'sms'>('email');
+const ticketSending = ref(false);
+const clientSearch = ref('');
+const clientSuggestions = ref<Cliente[]>([]);
+const clientSearchLoading = ref(false);
+const clientSelection = ref<Cliente | null>(null);
+const clientForm = reactive({ nombre: '', email: '', telefono: '' });
+const clientSaving = ref(false);
+const clientMessage = ref('');
+const clientError = ref('');
+let clientSearchTimer: number | undefined;
+const clientSearchNoResults = ref(false);
 
 const discountPercent = ref<number>(0);
 const paymentMethod = ref<CashMethod>('efectivo');
@@ -193,6 +227,227 @@ function showError(text: string) {
         errorTimer = undefined;
     }, ALERT_TIMEOUT_MS);
 }
+
+function clearTicketState() {
+    if (clientSearchTimer) {
+        clearTimeout(clientSearchTimer);
+        clientSearchTimer = undefined;
+    }
+    ticketSending.value = false;
+    clientSearch.value = '';
+    clientSuggestions.value = [];
+    clientSelection.value = null;
+    clientForm.nombre = '';
+    clientForm.email = '';
+    clientForm.telefono = '';
+    clientMessage.value = '';
+    clientError.value = '';
+    clientSaving.value = false;
+    clientSearchNoResults.value = false;
+}
+
+function openTicketModal(snapshot: SaleSnapshot) {
+    console.log('Opening ticket modal for sale', snapshot);
+    lastSaleSnapshot.value = snapshot;
+    ticketSendChannel.value = 'email';
+    clearTicketState();
+    showTicketModal.value = true;
+}
+
+function closeTicketModal() {
+    showTicketModal.value = false;
+    clearTicketState();
+    lastSaleSnapshot.value = null;
+}
+
+function applyClientSuggestion(cliente: Cliente) {
+    clientSelection.value = cliente;
+    clientForm.nombre = cliente?.nombre ?? '';
+    clientForm.email = cliente?.email ?? '';
+    clientForm.telefono = cliente?.telefono ?? '';
+    clientSearch.value = cliente?.nombre ?? '';
+    clientSuggestions.value = [];
+    clientSearchNoResults.value = false;
+}
+
+function resetClientForm() {
+    clientSelection.value = null;
+    clientForm.nombre = '';
+    clientForm.email = '';
+    clientForm.telefono = '';
+    clientSearch.value = '';
+    clientSuggestions.value = [];
+    clientMessage.value = '';
+    clientError.value = '';
+    clientSearchNoResults.value = false;
+}
+
+function selectClientSuggestion(cliente: Cliente) {
+    applyClientSuggestion(cliente);
+}
+
+function captureSaleSnapshot(ventaId: number, sourceRows: CartRow[] = cart.value): SaleSnapshot {
+    return {
+        idventa: ventaId,
+        fecha: new Date().toISOString().slice(0, 10),
+        rows: sourceRows.map(row => ({ ...row })),
+        subtotal: subTotal.value,
+        promoDiscount: promoDiscountAmount.value,
+        manualDiscount: discountAmount.value,
+        totalDiscount: totalDiscountAmount.value,
+        afterDiscount: afterDiscount.value,
+        surchargePercent: surchargePercent.value,
+        surchargeAmount: surchargeAmount.value,
+        total: total.value,
+        paymentMethod: paymentMethod.value,
+        cashReceived: paymentMethod.value === 'efectivo' ? Number(cashReceived.value ?? 0) : total.value,
+        change: paymentMethod.value === 'efectivo' ? changeDue.value : 0,
+    };
+}
+
+async function saveCliente() {
+    clientError.value = '';
+    clientMessage.value = '';
+    const nombre = clientForm.nombre.trim();
+    const email = clientForm.email.trim();
+    const telefono = clientForm.telefono.trim();
+
+    if (!nombre) {
+        clientError.value = 'Nombre del cliente requerido';
+        return;
+    }
+    if (ticketSendChannel.value === 'email' && !email) {
+        clientError.value = 'Correo electrónico requerido para enviar ticket por email';
+        return;
+    }
+    if (ticketSendChannel.value === 'sms' && !telefono) {
+        clientError.value = 'Teléfono requerido para enviar ticket por SMS';
+        return;
+    }
+
+    clientSaving.value = true;
+    try {
+        const payload = { nombre, email: email || null, telefono: telefono || null };
+        const saved = await createCliente(payload);
+        const cliente = saved?.data ?? saved;
+        applyClientSuggestion({
+            id: cliente?.id ?? clientSelection.value?.id ?? 0,
+            nombre: cliente?.nombre ?? nombre,
+            email: cliente?.email ?? payload.email ?? '',
+            telefono: cliente?.telefono ?? payload.telefono ?? '',
+        });
+        clientMessage.value = 'Cliente guardado';
+    } catch (e: any) {
+        clientError.value = e?.response?.data?.message || 'No se pudo guardar cliente';
+    } finally {
+        clientSaving.value = false;
+    }
+}
+
+async function sendTicket() {
+    clientError.value = '';
+    clientMessage.value = '';
+    const snapshot = lastSaleSnapshot.value;
+    if (!snapshot) {
+        clientError.value = 'No hay ticket para enviar';
+        return;
+    }
+
+    const nombre = clientForm.nombre.trim();
+    const email = clientForm.email.trim();
+    const telefono = clientForm.telefono.trim();
+
+    if (!nombre) {
+        clientError.value = 'Nombre del cliente requerido';
+        return;
+    }
+
+    if (ticketSendChannel.value === 'email') {
+        if (!email) {
+            clientError.value = 'Proporciona un correo electrónico válido';
+            return;
+        }
+    } else {
+        if (!telefono) {
+            clientError.value = 'Proporciona un número de teléfono válido';
+            return;
+        }
+    }
+
+    ticketSending.value = true;
+    try {
+        let ticketPdfBase64: string | undefined;
+        if (ticketSendChannel.value === 'email') {
+            const doc = buildReceiptPDF(snapshot);
+            const dataUri = doc.output('datauristring');
+            ticketPdfBase64 = dataUri.includes(',') ? dataUri.split(',')[1] : dataUri;
+        }
+        await sendSaleTicket({
+            venta_id: snapshot.idventa,
+            canal: ticketSendChannel.value,
+            cliente: {
+                nombre,
+                email: email || null,
+                telefono: telefono || null,
+            },
+            ticket_pdf_base64: ticketPdfBase64,
+        });
+
+        const successText = ticketSendChannel.value === 'email'
+            ? `Ticket enviado a ${email}`
+            : `Ticket enviado vía SMS a ${telefono}`;
+        showMessage(successText);
+        closeTicketModal();
+    } catch (e: any) {
+        clientError.value = e?.response?.data?.message || 'No se pudo enviar el ticket';
+    } finally {
+        ticketSending.value = false;
+    }
+}
+
+function onPrintTicket() {
+    const snapshot = lastSaleSnapshot.value;
+    if (!snapshot) return;
+    makeReceiptPDFFromSale(snapshot);
+    closeTicketModal();
+}
+
+watch(clientSearch, (val) => {
+    if (!showTicketModal.value) return;
+    const raw = val ?? '';
+    const trimmed = raw.trim();
+    clientForm.nombre = raw;
+    if (clientSearchTimer) {
+        clearTimeout(clientSearchTimer);
+        clientSearchTimer = undefined;
+    }
+    clientError.value = '';
+    clientSearchNoResults.value = false;
+    if (!trimmed) {
+        clientSuggestions.value = [];
+        return;
+    }
+    if (trimmed.length < 2) {
+        clientSuggestions.value = [];
+        return;
+    }
+    const term = trimmed;
+    clientSearchTimer = window.setTimeout(async () => {
+        clientSearchLoading.value = true;
+        try {
+            const resp = await searchClientes({ search: term, limit: 8 });
+            const rows = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
+            if (clientSearch.value.trim() !== term) return;
+            clientSuggestions.value = rows;
+            clientSearchNoResults.value = term.length >= 5 && rows.length === 0;
+        } catch (e: any) {
+            clientError.value = e?.response?.data?.message || 'No se pudo buscar clientes';
+            clientSearchNoResults.value = false;
+        } finally {
+            clientSearchLoading.value = false;
+        }
+    }, 350);
+});
 
 async function getPromosForRow(row: CartRow, proveedorIdent?: number) {
     if (promoCache.has(row.ident)) return promoCache.get(row.ident)!;
@@ -506,10 +761,8 @@ async function onCheckout() {
 
         const res = await checkout(payload);
         const ventaId = res?.data?.venta?.idventa;
-
-        if (ventaId) {
-            await makeReceiptPDFFromSale(ventaId, { fecha: new Date().toISOString().slice(0, 10) });
-        }
+        const snapshot = captureSaleSnapshot(ventaId ?? Date.now());
+        openTicketModal(snapshot);
         clearError();
         showMessage('Venta realizada con promociones aplicadas');
 
@@ -524,52 +777,45 @@ async function onCheckout() {
     }
 }
 
-/** Builds and downloads the thermal ticket PDF summarizing the recent sale. */
-async function makeReceiptPDFFromSale(idventa: number, opts?: { fecha?: string }) {
-    const rows = cart.value.slice();
-    const fecha = opts?.fecha ?? new Date().toISOString().slice(0, 10);
-
-    const _subtotal = rows.reduce((sum, row) => sum + (row.precio * row.qty), 0);
-    const _promoDisc = rows.reduce((sum, row) => sum + linePromoDiscount(row), 0);
-    const _manualDisc = Math.round((_subtotal * (discountPercent.value || 0) / 100) * 100) / 100;
-    const _afterDisc = Math.max(0, _subtotal - _promoDisc - _manualDisc);
-    const _surchargePct = (paymentMethod.value === 'credit') ? 4.5 : 0;
-    const _surcharge = Math.round((_afterDisc * _surchargePct / 100) * 100) / 100;
-    const _total = Math.round((_afterDisc + _surcharge) * 100) / 100;
-    const _received = paymentMethod.value === 'efectivo' ? Number(cashReceived.value ?? 0) : _total;
-    const _change = paymentMethod.value === 'efectivo' ? Math.max(0, Math.round((_received - _total) * 100) / 100) : 0;
+function buildReceiptPDF(snapshot: SaleSnapshot) {
+    const rows = snapshot.rows;
+    const fecha = snapshot.fecha;
 
     const money = (amount: number, currencyCode = 'MXN', locale = 'es-MX') => {
         try { return new Intl.NumberFormat(locale, { style: 'currency', currency: currencyCode, minimumFractionDigits: 2 }).format(amount); }
         catch { return `$${amount.toFixed(2)}`; }
     };
 
-    const PAGE_W = 56;
-    const PAGE_H = 200;
-    const MARGIN = 4;
+    const doc = new jsPDF({ unit: 'mm', format: 'letter' });
+    const PAGE_W = 215.9;
+    const PAGE_H = 279.4;
+    const MARGIN = 12;
     const INNER_W = PAGE_W - MARGIN * 2;
     const xL = MARGIN;
-    const xR = PAGE_W - MARGIN;
-    const xMidRight = xR;
-    const lineGap = 4;
+    const xMidRight = PAGE_W - MARGIN;
+    const lineGap = 6;
+    let y = 45;
 
-    const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, PAGE_H] });
-    let y = MARGIN;
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
-    doc.text('ROSA MEXICANO', xL, y); y += lineGap + 1;
-
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
-    doc.text(`Ticket #${idventa}`, xL, y); y += lineGap;
-    doc.text(`Fecha: ${fecha}`, xL, y); y += lineGap;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+    doc.text('Ticket de venta', 15, 20);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text(`Ticket #${snapshot.idventa}`, 15, 27);
+    doc.text(`Fecha: ${fecha}`, 15, 33);
     if (caja.value?.caja?.usuario) {
-        doc.text(`Vendedor: ${caja.value.caja.usuario}`, xL, y);
-        y += lineGap + 1;
+        doc.text(`Vendedor: ${caja.value.caja.usuario}`, 15, 39);
     }
 
-    const hr = () => { doc.setDrawColor(200); doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 2; };
-    hr();
+    const hr = () => { doc.setDrawColor(220); doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 2; };
+    const rowR = (label: string, value: string, bold = false) => {
+        pageBreakIfNeeded();
+        if (bold) doc.setFont('helvetica', 'bold');
+        doc.text(label, xL, y);
+        doc.text(value, xMidRight, y, { align: 'right' });
+        if (bold) doc.setFont('helvetica', 'normal');
+        y += lineGap;
+    };
 
+    hr();
     doc.setFont('helvetica', 'bold');
     doc.text('Productos', xL, y); y += lineGap;
     doc.setFont('helvetica', 'normal');
@@ -577,32 +823,29 @@ async function makeReceiptPDFFromSale(idventa: number, opts?: { fecha?: string }
     rows.forEach(row => {
         const nameLines = doc.splitTextToSize(row.nombre || 'Producto', INNER_W);
         nameLines.forEach((ln: string) => {
-            pageBreakIfNeeded(); doc.text(ln, xL, y); y += lineGap;
+            pageBreakIfNeeded();
+            doc.text(ln, xL, y);
+            y += lineGap;
         });
 
         if (row.proveedorname) {
             pageBreakIfNeeded();
-            doc.setFontSize(8);
-            doc.setTextColor(110, 110, 110);
-            const proveedorLines = doc.splitTextToSize(`Proveedor: ${row.proveedorname}`, INNER_W);
-            proveedorLines.forEach((ln: string, idx: number) => {
-                if (idx > 0) pageBreakIfNeeded();
-                doc.text(ln, xL, y);
-                if (idx < proveedorLines.length - 1) y += lineGap - 1;
-            });
-            doc.setTextColor(0, 0, 0);
             doc.setFontSize(9);
-            y += lineGap - 1;
+            doc.setTextColor(120, 120, 120);
+            doc.text(`Proveedor: ${row.proveedorname}`, xL, y);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(10);
+            y += lineGap - 2;
         }
 
         if (row.promoNote) {
             pageBreakIfNeeded();
-            doc.setFontSize(8);
+            doc.setFontSize(9);
             doc.setTextColor(0, 128, 96);
             doc.text(`• ${row.promoNote}`, xL, y);
             doc.setTextColor(0, 0, 0);
-            doc.setFontSize(9);
-            y += lineGap - 1;
+            doc.setFontSize(10);
+            y += lineGap - 2;
         }
 
         const lineDiscount = linePromoDiscount(row);
@@ -615,50 +858,46 @@ async function makeReceiptPDFFromSale(idventa: number, opts?: { fecha?: string }
 
         if (lineDiscount > 0) {
             pageBreakIfNeeded();
-            doc.setFontSize(8);
-            doc.text('Descuento', xL, y);
-            doc.text(`- ${money(lineDiscount)}`, xMidRight, y, { align: 'right' });
             doc.setFontSize(9);
-            y += lineGap - 1;
+            doc.text('Descuento aplicado', xL, y);
+            doc.text(`- ${money(lineDiscount)}`, xMidRight, y, { align: 'right' });
+            doc.setFontSize(10);
+            y += lineGap - 2;
         }
 
-        y += 1;
+        y += 2;
     });
 
     hr();
-
-    const rowR = (label: string, value: string, bold = false) => {
-        pageBreakIfNeeded();
-        if (bold) doc.setFont('helvetica', 'bold');
-        doc.text(label, xL, y);
-        doc.text(value, xMidRight, y, { align: 'right' });
-        if (bold) doc.setFont('helvetica', 'normal');
-        y += lineGap;
-    };
-
-    rowR('Subtotal', money(_subtotal));
-    if (_promoDisc) rowR('Promociones', `- ${money(_promoDisc)}`);
-    if (_manualDisc) rowR('Desc. manual', `- ${money(_manualDisc)}`);
-    if (_surcharge) rowR(`Recargo ${_surchargePct}%`, money(_surcharge));
-    rowR('TOTAL', money(_total), true);
+    rowR('Subtotal', money(snapshot.subtotal));
+    if (snapshot.promoDiscount) rowR('Promociones', `- ${money(snapshot.promoDiscount)}`);
+    if (snapshot.manualDiscount) rowR('Desc. manual', `- ${money(snapshot.manualDiscount)}`);
+    if (snapshot.surchargeAmount) rowR(`Recargo ${snapshot.surchargePercent}%`, money(snapshot.surchargeAmount));
+    rowR('TOTAL', money(snapshot.total), true);
 
     hr();
-    rowR('Método', paymentMethod.value.toUpperCase());
-    rowR('Recibido', money(_received));
-    rowR('Cambio', money(_change));
+    rowR('Método', snapshot.paymentMethod.toUpperCase());
+    rowR('Recibido', money(snapshot.cashReceived));
+    rowR('Cambio', money(snapshot.change));
 
     y += 2; pageBreakIfNeeded();
-    doc.setFontSize(8);
+    doc.setFontSize(9);
     doc.text('¡Gracias por su compra!', PAGE_W / 2, y, { align: 'center' });
-
-    doc.save(`ticket_${idventa}.pdf`);
 
     function pageBreakIfNeeded() {
         if (y > (PAGE_H - MARGIN - lineGap)) {
-            doc.addPage([PAGE_W, PAGE_H], 'portrait');
+            doc.addPage('letter', 'portrait');
             y = MARGIN;
         }
     }
+
+    return doc;
+}
+
+/** Builds and downloads the thermal ticket PDF summarizing the recent sale. */
+async function makeReceiptPDFFromSale(snapshot: SaleSnapshot) {
+    const doc = buildReceiptPDF(snapshot);
+    doc.save(`ticket_${snapshot.idventa}.pdf`);
 }
 
 // Lifecycle hooks ------------------------------------------------
@@ -674,6 +913,7 @@ onUnmounted(() => {
     if (scanTimer) clearTimeout(scanTimer);
     if (messageTimer) clearTimeout(messageTimer);
     if (errorTimer) clearTimeout(errorTimer);
+    if (clientSearchTimer) clearTimeout(clientSearchTimer);
     window.removeEventListener('keydown', handleKeydown);
 });
 </script>
@@ -903,10 +1143,10 @@ onUnmounted(() => {
                 </section>
             </div>
         </div>
-        <div v-if="showExpenseModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
-            @click.self="closeExpenseModal">
-            <div class="w-full max-w-md rounded-lg bg-white p-5 shadow-lg">
-                <h2 class="text-lg font-semibold text-gray-900">Registrar egreso</h2>
+    <div v-if="showExpenseModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+        @click.self="closeExpenseModal">
+        <div class="w-full max-w-md rounded-lg bg-white p-5 shadow-lg">
+            <h2 class="text-lg font-semibold text-gray-900">Registrar egreso</h2>
                 <p class="mt-1 text-sm text-gray-500">Captura salidas de efectivo para mantener el control de caja.</p>
 
                 <div v-if="expenseError" class="mt-3 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -941,6 +1181,95 @@ onUnmounted(() => {
                         class="rounded-md bg-rose-600 px-3 py-1.5 text-sm text-white hover:bg-rose-700 disabled:opacity-60">
                         {{ expenseSaving ? 'Guardando…' : 'Guardar egreso' }}
                     </button>
+                </div>
+            </div>
+        </div>
+        <div v-if="showTicketModal && lastSaleSnapshot" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+            @click.self="closeTicketModal">
+            <div class="w-full max-w-2xl rounded-lg bg-white p-5 shadow-lg space-y-4">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900">Ticket de venta #{{ lastSaleSnapshot?.idventa }}</h2>
+                        <p class="text-xs text-gray-500 mt-1">Elige cómo entregar el comprobante al cliente. Total: <span class="font-semibold text-gray-800">{{ currency(lastSaleSnapshot?.total ?? 0) }}</span></p>
+                    </div>
+                    <button type="button" @click="closeTicketModal"
+                        class="inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-50">✕</button>
+                </div>
+
+                <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <button type="button" @click="onPrintTicket"
+                            class="rounded-lg bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 text-sm disabled:opacity-60">
+                            Imprimir ticket
+                        </button>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <label class="text-sm text-gray-600">Enviar por</label>
+                            <select v-model="ticketSendChannel"
+                                class="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:border-gray-900 focus:ring-gray-900">
+                                <option value="email">Email</option>
+                                <option value="sms" disabled>SMS (próximamente)</option>
+                            </select>
+                            <button type="button" @click="sendTicket" :disabled="ticketSending"
+                                class="rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-60">
+                                {{ ticketSending ? 'Enviando…' : 'Enviar ticket' }}
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500">Para enviar el ticket completa los datos del cliente o selecciona uno existente.</p>
+                </div>
+
+                <div class="space-y-3">
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Buscar cliente</label>
+                        <input v-model="clientSearch" type="text" placeholder="Nombre o correo…"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
+                        <div v-if="clientSearchLoading" class="text-xs text-gray-500">Buscando…</div>
+                        <ul v-else-if="clientSuggestions.length"
+                            class="max-h-40 overflow-auto border border-gray-200 rounded-lg divide-y divide-gray-100 text-sm">
+                            <li v-for="c in clientSuggestions" :key="c.id"
+                                class="px-3 py-2 cursor-pointer hover:bg-gray-50"
+                                @click="selectClientSuggestion(c)">
+                                <div class="font-medium text-gray-800">{{ c.nombre }}</div>
+                                <div class="text-xs text-gray-500">{{ c.email || 'Sin email' }} · {{ c.telefono || 'Sin teléfono' }}</div>
+                            </li>
+                        </ul>
+                        <div v-else-if="clientSearchNoResults" class="text-xs text-gray-500">Sin resultados</div>
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Nombre</label>
+                            <input v-model="clientForm.nombre" type="text"
+                                class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
+                                placeholder="Nombre del cliente" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Correo electrónico</label>
+                            <input v-model="clientForm.email" type="email"
+                                class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
+                                placeholder="cliente@email.com" />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Teléfono</label>
+                            <input v-model="clientForm.telefono" type="tel"
+                                class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2"
+                                placeholder="10 dígitos" />
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap gap-2">
+                        <button type="button" @click="saveCliente" :disabled="clientSaving"
+                            class="rounded-lg bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 text-sm disabled:opacity-60">
+                            Guardar cliente
+                        </button>
+                        <button type="button" @click="resetClientForm"
+                            class="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50">
+                            Limpiar
+                        </button>
+                    </div>
+
+                    <div v-if="clientMessage" class="rounded border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 text-sm">{{ clientMessage }}</div>
+                    <div v-if="clientError" class="rounded border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">{{ clientError }}</div>
                 </div>
             </div>
         </div>

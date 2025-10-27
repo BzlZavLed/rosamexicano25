@@ -11,6 +11,9 @@ const AdminProveedoresForm = () => import("../views/AdminProveedoresForm.vue");
 const AdminInventarioEntrada = () => import("../views/AdminInventarioEntrada.vue");
 const AdminPromociones = () => import("../views/AdminPromociones.vue");
 const AdminCajaView = () => import("../views/AdminCajaView.vue");
+const AdminEmailHistory = () => import("../views/AdminEmailHistory.vue");
+const AdminClientes = () => import("../views/AdminClientes.vue");
+const AdminCobros = () => import("../views/AdminCobros.vue");
 
 
 const routes: RouteRecordRaw[] = [
@@ -75,6 +78,27 @@ const routes: RouteRecordRaw[] = [
         path: '/admin/caja',
         name: 'admin-caja',
         component: AdminCajaView,
+        meta: { requiresAuth: true, role: 'admin' }
+    },
+    //historial de emails
+    {
+        path: '/admin/emails',
+        name: 'admin-emails-history',
+        component: AdminEmailHistory,
+        meta: { requiresAuth: true, role: 'admin' }
+    },
+    //clientes view
+    {
+        path: '/admin/clientes',
+        name: 'admin-clientes',
+        component: AdminClientes,
+        meta: { requiresAuth: true, role: 'admin' }
+    },
+    //cobros a marcas
+    {
+        path: '/admin/cobros',
+        name: 'admin-cobros',
+        component: AdminCobros,
         meta: { requiresAuth: true, role: 'admin' }
     }
 ];

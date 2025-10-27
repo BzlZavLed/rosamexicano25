@@ -41,6 +41,16 @@ export async function checkout(payload: {
     return data; // { data: {...} }
 }
 
+export async function sendSaleTicket(payload: {
+    venta_id: number;
+    canal: 'email' | 'sms';
+    cliente: { nombre: string; email?: string | null; telefono?: string | null };
+    ticket_pdf_base64?: string;
+}) {
+    const { data } = await http.post('/cashier/send-ticket', payload);
+    return data;
+}
+
 export type CashMovementPayload = {
     totalventa: number;
     metodo: CashMethod;

@@ -226,6 +226,7 @@ async function loadList() {
         };
         if (q.value) params.search = q.value;
         const resp = await listProductos(params);
+        console.log('listProductos resp:', resp);
         const rows = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
         productos.value = rows;
 
@@ -573,6 +574,7 @@ onMounted(async () => {
                                 <th class="text-left font-medium px-3 py-2">ID</th>
                                 <th class="text-left font-medium px-3 py-2">Ident</th>
                                 <th class="text-left font-medium px-3 py-2">Nombre</th>
+                                <th class="text-left font-medium px-3 py-2">Proveedor</th>
                                 <th class="text-right font-medium px-3 py-2">Precio</th>
                             </tr>
                         </thead>
@@ -582,6 +584,7 @@ onMounted(async () => {
                                 <td class="px-3 py-2">{{ p.id }}</td>
                                 <td class="px-3 py-2">{{ p.ident }}</td>
                                 <td class="px-3 py-2">{{ p.nombre }}</td>
+                                <td class="px-3 py-2">{{ p.proveedor?.nombre }}</td>
                                 <td class="px-3 py-2 text-right">{{ displayMoney(p.precio) }}</td>
                             </tr>
                             <tr v-if="!loading && productos.length === 0">
@@ -651,7 +654,6 @@ onMounted(async () => {
                     class="rounded-lg border px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-60">
                     Subir archivo
                 </button>
-                <p class="text-xs text-gray-500">Endpoint esperado: <code>/api/productos/bulk-upload</code></p>
             </div>
         </div>
     </AppLayout>

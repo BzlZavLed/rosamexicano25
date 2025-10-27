@@ -176,17 +176,6 @@ watch(() => pagination.page, (newVal, oldVal) => {
     loadList();
 });
 
-watch(() => pagination.perPage, (newVal, oldVal) => {
-    if (oldVal === undefined || newVal === oldVal) return;
-    pagination.page = 1;
-    loadList();
-});
-
-watch(() => pagination.page, (newVal, oldVal) => {
-    if (oldVal === undefined || newVal === oldVal) return;
-    loadList();
-});
-
 onMounted(async () => {
     resetForm();
     await loadList();

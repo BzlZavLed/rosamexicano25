@@ -6,6 +6,7 @@ export type Producto = {
     nombre: string;
     descripcion?: string;
     precio: number;
+    proveedor?: Proveedor;
     proveedorid: number;
     fecha?: string;              // 'YYYY-MM-DD'
 };
@@ -14,6 +15,7 @@ export type Proveedor = { ident: number; nombre: string };
 
 export async function listProductos(params?: { search?: string; page?: number; per_page?: number }) {
     const { data } = await http.get('/productos', { params });
+    console.log('listProductos response data:', data);
     return data;
 }
 
