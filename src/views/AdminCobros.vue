@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 import { jsPDF } from 'jspdf';
 import AppLayout from '../components/layout/AppLayout.vue';
 import { listProveedoresAll, type Proveedor } from '../api/proveedores';
-import { createCobro, createCobrosBatch, listMensualidad, payMensualidad, type Mensualidad } from '../api/cobros';
+import { createCobro, createCobrosBatch, listMensualidad, payMensualidad, sendMensualidadMail, type Mensualidad } from '../api/cobros';
 
 const loadingProveedores = ref(true);
 const proveedoresError = ref('');
@@ -24,6 +24,9 @@ const bulkState = reactive({
 const bulkMessage = ref('');
 const bulkError = ref('');
 const bulkFailures = ref<Array<{ proveedor: Proveedor; error: string }>>([]);
+const bulkCreated = ref<number | null>(null);
+const bulkSkipped = ref<number | null>(null);
+const bulkMailStats = ref<{ sent: number; failed: number } | null>(null);
 
 const singleForm = reactive({
     proveedor_id: null as number | null,
@@ -50,6 +53,7 @@ const cobrosMeta = reactive({
 const cobrosSearch = ref('');
 const cobrosMes = ref('');
 const cobrosStatus = ref('');
+const filterMailStatus = ref<'all' | 'sent' | 'pending'>('all');
 let cobrosFilterTimer: number | undefined;
 
 const paymentModalOpen = ref(false);
@@ -67,6 +71,19 @@ const paymentForm = reactive({
     payment_date: todayISO(),
     subject: '',
     message: '',
+    email: '',
+});
+
+const emailModalOpen = ref(false);
+const emailSaving = ref(false);
+const emailError = ref('');
+const emailMessage = ref('');
+const emailForm = reactive({
+    mensualidadId: null as number | null,
+    email: '',
+    asunto: '',
+    cobroUrl: '',
+    proveedorNombre: '',
 });
 
 const proveedoresOrdenados = computed(() =>
@@ -77,8 +94,18 @@ const proveedoresConImporte = computed(() =>
     proveedoresOrdenados.value.filter((p) => Number(p.importe ?? 0) > 0)
 );
 
+
 const proveedoresSinImporte = computed(() =>
     proveedoresOrdenados.value.filter((p) => Number(p.importe ?? 0) <= 0)
+);
+
+const filteredCobros = computed(() =>
+    cobros.value.filter((c) => {
+        const mailStatus = Number(c.mail_status ?? 0);
+        if (filterMailStatus.value === 'sent' && mailStatus === 0) return false;
+        if (filterMailStatus.value === 'pending' && mailStatus !== 0) return false;
+        return true;
+    })
 );
 
 const totalMensual = computed(() =>
@@ -191,9 +218,20 @@ function resetPaymentForm() {
     paymentForm.payment_date = todayISO();
     paymentForm.subject = '';
     paymentForm.message = '';
+    paymentForm.email = '';
     paymentError.value = '';
     paymentMessage.value = '';
     paymentTarget.value = null;
+}
+
+function resetEmailForm() {
+    emailForm.mensualidadId = null;
+    emailForm.email = '';
+    emailForm.asunto = '';
+    emailForm.cobroUrl = '';
+    emailForm.proveedorNombre = '';
+    emailError.value = '';
+    emailMessage.value = '';
 }
 
 function openPaymentModal(m: Mensualidad) {
@@ -207,8 +245,9 @@ function openPaymentModal(m: Mensualidad) {
     const cleanPendiente = Math.max(0, Math.round(Number(pendiente) * 100) / 100);
     paymentForm.cantidad_pago = cleanPendiente > 0 ? cleanPendiente : Number(m.importe ?? 0);
     paymentForm.restante = cleanPendiente > 0 ? cleanPendiente : 0;
-    paymentForm.subject = `Pago ${m.concepto}`;
+    paymentForm.subject = `${m.concepto}`;
     paymentForm.message = '';
+    paymentForm.email = m.proveedor?.email ?? '';
     paymentModalOpen.value = true;
 }
 
@@ -218,6 +257,25 @@ function closePaymentModal() {
         window.setTimeout(resetPaymentForm, 200);
     } else {
         resetPaymentForm();
+    }
+}
+
+function openEmailModal(m: Mensualidad) {
+    resetEmailForm();
+    emailForm.mensualidadId = m.id;
+    emailForm.email = m.proveedor?.email ?? '';
+    emailForm.asunto = `Cobro generado ${formatMonthLabel(m.mes_cobro)}`;
+    emailForm.cobroUrl = m.cobro_path ?? '';
+    emailForm.proveedorNombre = m.proveedor_nombre ?? m.nombre ?? `Proveedor #${m.proveedor_id}`;
+    emailModalOpen.value = true;
+}
+
+function closeEmailModal() {
+    emailModalOpen.value = false;
+    if (typeof window !== 'undefined') {
+        window.setTimeout(resetEmailForm, 200);
+    } else {
+        resetEmailForm();
     }
 }
 
@@ -240,6 +298,15 @@ async function submitPayment() {
         paymentError.value = 'No se seleccionó el cobro.';
         return;
     }
+    const email = (paymentForm.email ?? '').trim();
+    if (!email) {
+        paymentError.value = 'Ingresa un correo electrónico para enviar el recibo.';
+        return;
+    }
+    if (!isValidEmail(email)) {
+        paymentError.value = 'Ingresa un correo válido.';
+        return;
+    }
     const cantidad = Number(paymentForm.cantidad_pago ?? 0);
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
         paymentError.value = 'Indica la cantidad pagada.';
@@ -257,6 +324,7 @@ async function submitPayment() {
         const restante = paymentForm.restante ?? Math.max(0, Math.round((paymentForm.importe - cantidad) * 100) / 100);
         paymentForm.restante = restante;
         const paymentDate = paymentForm.payment_date || todayISO();
+        const pagoCompleto = restante <= 0;
 
         const receipt = generatePagoPdf(target, {
             concepto: paymentForm.concepto,
@@ -273,24 +341,93 @@ async function submitPayment() {
             receipt_pdf_base64: receipt.base64,
             cantidad_pago: cantidad,
             restante,
+            pago_completo: pagoCompleto,
             payment_date: paymentDate || undefined,
             subject: paymentForm.subject?.trim() || undefined,
             message: paymentForm.message?.trim() || undefined,
+            email,
         });
         paymentMessage.value = 'Pago registrado correctamente.';
         openPdfInNewTab(receipt.base64);
+
+        let mailSucceeded = true;
+        try {
+            await sendMensualidadMail(paymentForm.mensualidadId, {
+                email,
+                asunto: paymentForm.subject?.trim() || undefined,
+            });
+            paymentMessage.value = 'Pago registrado y correo enviado.';
+        } catch (mailErr: any) {
+            paymentError.value = parseErrorMessage(mailErr) || 'Pago registrado, pero no se pudo enviar el correo.';
+            mailSucceeded = false;
+        }
+
         await loadCobros();
-        if (typeof window !== 'undefined') {
-            window.setTimeout(() => {
+        const shouldClose = mailSucceeded && !paymentError.value;
+        if (shouldClose) {
+            if (typeof window !== 'undefined') {
+                window.setTimeout(() => {
+                    closePaymentModal();
+                }, 600);
+            } else {
                 closePaymentModal();
-            }, 600);
-        } else {
-            closePaymentModal();
+            }
         }
     } catch (err: any) {
         paymentError.value = parseErrorMessage(err);
     } finally {
         paymentSaving.value = false;
+    }
+}
+
+function isValidEmail(email: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function submitEmail() {
+    emailError.value = '';
+    emailMessage.value = '';
+
+    const mensualidadId = emailForm.mensualidadId;
+    if (!mensualidadId) {
+        emailError.value = 'No se encontró el cobro seleccionado.';
+        return;
+    }
+
+    const email = emailForm.email.trim();
+    if (!email) {
+        emailError.value = 'Ingresa un correo electrónico.';
+        return;
+    }
+    if (!isValidEmail(email)) {
+        emailError.value = 'Ingresa un correo válido.';
+        return;
+    }
+
+    if (!emailForm.cobroUrl) {
+        emailError.value = 'No existe un PDF de cobro para enviar.';
+        return;
+    }
+
+    emailSaving.value = true;
+    try {
+        await sendMensualidadMail(mensualidadId, {
+            email,
+            asunto: emailForm.asunto.trim() || undefined,
+        });
+        emailMessage.value = 'Correo enviado correctamente.';
+        await loadCobros();
+        if (typeof window !== 'undefined') {
+            window.setTimeout(() => {
+                closeEmailModal();
+            }, 600);
+        } else {
+            closeEmailModal();
+        }
+    } catch (err: any) {
+        emailError.value = parseErrorMessage(err);
+    } finally {
+        emailSaving.value = false;
     }
 }
 
@@ -403,7 +540,7 @@ function generatePagoPdf(mensualidad: Mensualidad, ctx: PagoPdfContext) {
     const marginX = 18;
     let y = 20;
 
-    const providerName = mensualidad.proveedor_nombre ?? `Proveedor #${mensualidad.proveedor_id}`;
+    const providerName = mensualidad.nombre ?? `Proveedor #${mensualidad.proveedor_id}`;
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
@@ -519,6 +656,7 @@ async function loadProveedores() {
 }
 
 async function loadCobros() {
+
     cobrosLoading.value = true;
     cobrosError.value = '';
     try {
@@ -533,7 +671,7 @@ async function loadCobros() {
         const resp = await listMensualidad(params);
         const rows = Array.isArray(resp.data) ? resp.data : [];
         cobros.value = rows;
-
+;
         const meta = resp.meta ?? {};
         cobrosMeta.total = meta.total ?? rows.length;
         cobrosMeta.perPage = meta.per_page ?? cobrosMeta.perPage;
@@ -596,6 +734,9 @@ async function runMonthlyCobros() {
     bulkMessage.value = '';
     bulkError.value = '';
     bulkFailures.value = [];
+    bulkCreated.value = null;
+    bulkSkipped.value = null;
+    bulkMailStats.value = null;
 
     if (!bulkForm.mes_cobro || !bulkForm.fecha_cobro) {
         bulkError.value = 'Selecciona el mes y la fecha de cargo.';
@@ -650,11 +791,31 @@ async function runMonthlyCobros() {
     try {
         if (batchPayload.cobros.length > 1) {
             try {
-                await createCobrosBatch(batchPayload);
-                bulkState.successCount = batchPayload.cobros.length;
-                bulkMessage.value = `Se enviaron ${batchPayload.cobros.length} cobros correspondientes a ${formatMonthLabel(
-                    bulkForm.mes_cobro
-                )}.`;
+                const resp = await createCobrosBatch(batchPayload);
+                const created = resp.created ?? resp.data?.length ?? batchPayload.cobros.length;
+                const skipped = resp.skipped ?? 0;
+                const mailSent = resp.mail?.sent ?? null;
+                const mailFailed = resp.mail?.failed ?? null;
+
+                bulkState.successCount = created;
+                bulkCreated.value = created;
+                bulkSkipped.value = skipped;
+                bulkMailStats.value = mailSent != null || mailFailed != null
+                    ? {
+                        sent: mailSent ?? 0,
+                        failed: mailFailed ?? 0,
+                    }
+                    : null;
+
+                const baseMsg = resp.message ?? `Se generaron ${created} cobros.`;
+                const mailMsg = bulkMailStats.value
+                    ? ` Correos enviados: ${bulkMailStats.value.sent}, fallidos: ${bulkMailStats.value.failed}.`
+                    : '';
+                const skippedMsg = skipped ? ` Omitidos: ${skipped}.` : '';
+                bulkMessage.value = `${baseMsg}${mailMsg}${skippedMsg}`;
+
+                await loadProveedores();
+                await loadCobros();
                 return;
             } catch (batchErr: any) {
                 if (!shouldFallbackToSingle(batchErr)) {
@@ -690,6 +851,9 @@ async function runMonthlyCobros() {
 
         bulkState.successCount = success;
         bulkFailures.value = failures;
+        bulkCreated.value = success;
+        bulkSkipped.value = failures.length;
+        bulkMailStats.value = { sent: success, failed: failures.length };
 
         if (success) {
             bulkMessage.value = `Se generaron ${success} cobros.`;
@@ -780,6 +944,7 @@ async function submitSingleCobro() {
 onMounted(() => {
     loadProveedores();
     loadCobros();
+
 });
 
 watch(cobrosSearch, () => scheduleCobrosFetch());
@@ -788,6 +953,12 @@ watch(() => paymentForm.cantidad_pago, () => updateRestante());
 watch(() => paymentModalOpen.value, (open) => {
     if (!open) return;
     updateRestante();
+});
+watch(() => emailModalOpen.value, (open) => {
+    if (open) {
+        emailError.value = '';
+        emailMessage.value = '';
+    }
 });
 
 onUnmounted(() => {
@@ -865,6 +1036,19 @@ onUnmounted(() => {
                                 {{ bulkMessage }}
                             </div>
                             <div
+                                v-if="bulkCreated !== null || bulkMailStats"
+                                class="space-y-1 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700"
+                            >
+                                <p v-if="bulkCreated !== null">
+                                    Cobros generados: <span class="font-semibold">{{ bulkCreated }}</span>
+                                    <span v-if="bulkSkipped !== null"> • Omitidos: <span class="font-semibold">{{ bulkSkipped }}</span></span>
+                                </p>
+                                <p v-if="bulkMailStats">
+                                    Correos enviados: <span class="font-semibold">{{ bulkMailStats.sent }}</span>
+                                    • Fallidos: <span class="font-semibold">{{ bulkMailStats.failed }}</span>
+                                </p>
+                            </div>
+                            <div
                                 v-if="bulkError"
                                 class="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600"
                             >
@@ -903,46 +1087,8 @@ onUnmounted(() => {
                                 </button>
                             </div>
 
-                            <div class="max-h-[360px] overflow-hidden rounded-lg border border-gray-100">
-                                <div v-if="loadingProveedores" class="px-4 py-5 text-sm text-gray-500">
-                                    Cargando proveedores…
-                                </div>
-                                <div v-else-if="proveedoresError" class="px-4 py-5 text-sm text-red-600">
-                                    {{ proveedoresError }}
-                                </div>
-                                <template v-else>
-                                    <div v-if="proveedoresConImporte.length" class="divide-y divide-gray-100 bg-white">
-                                        <div
-                                            v-for="proveedor in proveedoresConImporte"
-                                            :key="proveedor.id"
-                                            class="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
-                                        >
-                                            <div>
-                                                <p class="font-medium text-gray-900">{{ proveedor.nombre }}</p>
-                                                <p class="text-xs text-gray-500">Identificador: {{ proveedor.ident }}</p>
-                                            </div>
-                                            <div class="text-sm text-gray-600 sm:text-right">
-                                                <p class="font-semibold text-gray-900">
-                                                    {{ formatCurrency(Number(proveedor.importe ?? 0)) }}
-                                                </p>
-                                                <p v-if="proveedor.email" class="text-xs text-gray-400 sm:max-w-[240px] sm:truncate">
-                                                    {{ proveedor.email }}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div v-else class="px-4 py-5 text-sm text-gray-500">
-                                        Ningún proveedor tiene importe mensual asignado.
-                                    </div>
-                                </template>
-                            </div>
-
-                            <div
-                                v-if="!loadingProveedores && proveedoresSinImporte.length"
-                                class="rounded-lg border border-dashed border-gray-200 px-4 py-3 text-xs text-gray-500"
-                            >
-                                {{ proveedoresSinImporte.length }} proveedores no tienen importe mensual y no se incluyen
-                                automáticamente.
+                            <div class="rounded-lg border border-dashed border-gray-200 px-4 py-3 text-xs text-gray-500">
+                                {{ proveedoresConImporte.length }} proveedores tienen importe mensual configurado. Se muestran en el listado inferior.
                             </div>
                         </div>
                     </div>
@@ -1064,6 +1210,57 @@ onUnmounted(() => {
             </section>
 
             <section class="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900">Proveedores con importe mensual</h2>
+                        <p class="text-sm text-gray-500">
+                            Listado completo de proveedores que participarán en el cobro mensual automático.
+                        </p>
+                    </div>
+                    <div class="text-xs text-gray-500">
+                        Total: <span class="font-semibold text-gray-900">{{ proveedoresConImporte.length }}</span>
+                        <template v-if="proveedoresSinImporte.length">
+                            • Sin importe: <span class="font-semibold text-gray-900">{{ proveedoresSinImporte.length }}</span>
+                        </template>
+                    </div>
+                </header>
+
+                <div class="mt-4 rounded-xl border border-gray-200">
+                    <div v-if="loadingProveedores" class="px-4 py-5 text-sm text-gray-500">
+                        Cargando proveedores…
+                    </div>
+                    <div v-else-if="proveedoresError" class="px-4 py-5 text-sm text-red-600">
+                        {{ proveedoresError }}
+                    </div>
+                    <template v-else>
+                        <div v-if="proveedoresConImporte.length" class="max-h-[420px] overflow-y-auto divide-y divide-gray-100 bg-white rounded-xl">
+                            <div
+                                v-for="proveedor in proveedoresConImporte"
+                                :key="proveedor.id"
+                                class="flex flex-col gap-2 px-4 py-3 text-sm md:flex-row md:items-center md:justify-between"
+                            >
+                                <div>
+                                    <p class="font-medium text-gray-900">{{ proveedor.nombre }}</p>
+                                    <p class="text-xs text-gray-500">Identificador: {{ proveedor.ident }}</p>
+                                </div>
+                                <div class="text-sm text-gray-600 md:text-right">
+                                    <p class="font-semibold text-gray-900">
+                                        {{ formatCurrency(Number(proveedor.importe ?? 0)) }}
+                                    </p>
+                                    <p v-if="proveedor.email" class="text-xs text-gray-400 md:max-w-[280px] md:truncate">
+                                        {{ proveedor.email }}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else class="px-4 py-5 text-sm text-gray-500">
+                            Ningún proveedor tiene importe mensual asignado.
+                        </div>
+                    </template>
+                </div>
+            </section>
+
+            <section class="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                 <header class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-900">Cobros registrados</h2>
@@ -1097,6 +1294,17 @@ onUnmounted(() => {
                                 <option value="pending">Pendiente</option>
                                 <option value="paid">Pagado</option>
                                 <option value="failed">Rechazado</option>
+                            </select>
+                        </label>
+                        <label class="flex flex-col">
+                            <span class="font-medium text-gray-700">Correo</span>
+                            <select
+                                v-model="filterMailStatus"
+                                class="mt-1 w-36 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
+                            >
+                                <option value="all">Todos</option>
+                                <option value="pending">Sin enviar</option>
+                                <option value="sent">Enviados</option>
                             </select>
                         </label>
                         <div class="mt-6 flex items-center gap-2">
@@ -1148,9 +1356,9 @@ onUnmounted(() => {
                                                 No hay cobros registrados con los filtros seleccionados.
                                             </td>
                                         </tr>
-                                        <tr v-for="c in cobros" :key="c.id" class="hover:bg-gray-50">
+                                        <tr v-for="c in filteredCobros" :key="c.id" class="hover:bg-gray-50">
                                             <td class="px-4 py-3">
-                                                <div class="font-medium text-gray-900">{{ c.proveedor_nombre ?? `Proveedor #${c.proveedor_id}` }}</div>
+                                                <div class="font-medium text-gray-900">{{ c.nombre }}</div>
                                                 <div class="text-xs text-gray-500">ID interno: {{ c.proveedor_ident ?? c.proveedor_id }}</div>
                                             </td>
                                             <td class="px-4 py-3">
@@ -1187,19 +1395,18 @@ onUnmounted(() => {
                                                 <span v-else class="text-xs text-gray-400">Sin archivo</span>
                                             </td>
                                             <td class="px-4 py-3 text-sm text-gray-600">
-                                                <template v-if="c.receipt_path || c.receipt_path">
+                                                <template v-if="c.receipt_path">
                                                     <button
                                                         type="button"
                                                         class="inline-flex items-center gap-1 text-sm text-gray-700 underline underline-offset-4 hover:text-gray-900"
-                                                        @click="openPdfInNewTab(c.receipt_path ?? c.receipt_path ?? '')"
-                                                    >
+                                                        @click="openPdfInNewTab(c.receipt_path)">
                                                         Ver PDF
                                                     </button>
                                                 </template>
                                                 <span v-else class="text-xs text-gray-400">Sin registro</span>
                                             </td>
                                             <td class="px-4 py-3 text-sm text-gray-600">
-                                                <div class="flex flex-wrap gap-2">
+                                                <div class="flex flex-wrap items-center gap-2">
                                                     <button
                                                         type="button"
                                                         class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
@@ -1207,6 +1414,21 @@ onUnmounted(() => {
                                                     >
                                                         Registrar pago
                                                     </button>
+                                                    <template v-if="Number(c.mail_status ?? 0) === 0">
+                                                        <button
+                                                            type="button"
+                                                            class="inline-flex items-center justify-center rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-200"
+                                                            :disabled="!c.cobro_path"
+                                                            @click="openEmailModal(c)"
+                                                        >
+                                                            Enviar correo
+                                                        </button>
+                                                    </template>
+                                                    <template v-else>
+                                                        <span class="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                                                            Correo enviado
+                                                        </span>
+                                                    </template>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1224,6 +1446,7 @@ onUnmounted(() => {
                     <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-sm text-gray-600">
                         <div>
                             Mostrando página {{ cobrosMeta.page }} de {{ cobrosMeta.lastPage }} ({{ cobrosMeta.total }} registros)
+                            <span class="text-xs text-gray-400">| Filtrados: {{ filteredCobros.length }}</span>
                         </div>
                         <div class="flex items-center gap-2">
                             <button
@@ -1313,6 +1536,19 @@ onUnmounted(() => {
                             </label>
                         </div>
 
+                        <div class="space-y-2">
+                            <label class="text-sm font-medium text-gray-700">Correo electrónico</label>
+                            <input
+                                v-model="paymentForm.email"
+                                type="email"
+                                class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
+                                placeholder="proveedor@example.com"
+                            />
+                            <p class="text-xs text-gray-500">
+                                Se enviará el recibo de pago a este correo.
+                            </p>
+                        </div>
+
                         <div class="grid gap-4 sm:grid-cols-2">
                             <label class="flex flex-col text-sm text-gray-600 sm:col-span-2">
                                 <span class="font-medium text-gray-700">Asunto (opcional)</span>
@@ -1360,6 +1596,92 @@ onUnmounted(() => {
                             >
                                 <span v-if="paymentSaving">Guardando…</span>
                                 <span v-else>Registrar pago</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </transition>
+
+        <transition name="fade">
+            <div
+                v-if="emailModalOpen"
+                class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6"
+            >
+                <div class="w-full max-w-xl rounded-2xl bg-white shadow-xl">
+                    <header class="flex items-start justify-between border-b border-gray-200 px-6 py-4">
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-900">Enviar comprobante por correo</h3>
+                            <p class="text-sm text-gray-500">
+                                {{ emailForm.proveedorNombre }}
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            class="inline-flex items-center justify-center rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-50"
+                            @click="closeEmailModal"
+                        >
+                            Cerrar
+                        </button>
+                    </header>
+
+                    <form class="px-6 py-5 space-y-4" @submit.prevent="submitEmail">
+                        <div class="space-y-2">
+                            <label class="text-sm font-medium text-gray-700">Correo electrónico</label>
+                            <input
+                                v-model="emailForm.email"
+                                type="email"
+                                class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
+                                placeholder="proveedor@example.com"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <label class="text-sm font-medium text-gray-700">Asunto (opcional)</label>
+                            <input
+                                v-model="emailForm.asunto"
+                                type="text"
+                                class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
+                                placeholder="Cobro generado"
+                            />
+                        </div>
+
+                        <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+                            <p class="font-medium text-gray-800">PDF a enviar</p>
+                            <p v-if="emailForm.cobroUrl" class="mt-1 break-all">
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1 text-xs text-gray-700 underline underline-offset-4 hover:text-gray-900"
+                                    @click="openPdfInNewTab(emailForm.cobroUrl)"
+                                >
+                                    Abrir comprobante
+                                </button>
+                            </p>
+                            <p v-else class="mt-1 text-rose-600">No se encontró un PDF para este cobro.</p>
+                        </div>
+
+                        <div v-if="emailMessage" class="rounded-lg border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
+                            {{ emailMessage }}
+                        </div>
+                        <div v-if="emailError" class="rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-600">
+                            {{ emailError }}
+                        </div>
+
+                        <div class="flex flex-col gap-3 sm:flex-row sm:justify-end">
+                            <button
+                                type="button"
+                                class="inline-flex items-center justify-center rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-500 hover:bg-gray-50"
+                                @click="closeEmailModal"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                type="submit"
+                                class="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                                :disabled="emailSaving"
+                            >
+                                <span v-if="emailSaving">Enviando…</span>
+                                <span v-else>Enviar correo</span>
                             </button>
                         </div>
                     </form>

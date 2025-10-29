@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
-import { listMailerEntries, type MailerEntry } from '../api/mailer';
-
+import { listMailerEntries, resendMailerEmail, type MailerEntry } from '../api/mailer';
+import ResendEmailModal from '../components/modals/ResendEmailModal.vue';
+ 
 const PER_PAGE = 20;
 
 const loading = ref(false);
 const error = ref('');
 const search = ref('');
 const mailers = ref<MailerEntry[]>([]);
+const filterStatus = ref<'all' | 'sent'>('all');
 const pagination = reactive({
     page: 1,
     perPage: PER_PAGE,
@@ -25,9 +27,25 @@ const pageInfo = computed(() => {
     return { start, end };
 });
 
-const hasResults = computed(() => mailers.value.length > 0);
+const filteredMailers = computed(() => {
+    if (filterStatus.value === 'sent') {
+        return mailers.value.filter((m) => Number(m.status) === 1);
+    }
+    return mailers.value;
+});
+
+const hasResults = computed(() => filteredMailers.value.length > 0);
 const canPrev = computed(() => pagination.page > 1);
 const canNext = computed(() => pagination.page < pagination.lastPage);
+
+const resendModalOpen = ref(false);
+const resendSaving = ref(false);
+const resendError = ref('');
+const resendMessage = ref('');
+const resendAttachmentUrl = ref<string | null>(null);
+const resendEmail = ref('');
+const resendSubject = ref('');
+const resendBody = ref('');
 
 function statusLabel(status: number) {
     if (status === 1) return 'Enviado';
@@ -142,6 +160,53 @@ function openLink(url: string) {
     window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+function openResendModal(entry: MailerEntry) {
+    resendEmail.value = (entry.email ?? '').trim();
+    resendSubject.value = entry.asunto?.trim() || 'Documento solicitado';
+    resendBody.value = entry.mensaje?.trim() || 'Adjunto documento.';
+    resendAttachmentUrl.value = isValidMailUrl(entry.mail) ? entry.mail : null;
+    resendError.value = '';
+    resendMessage.value = '';
+    resendModalOpen.value = true;
+}
+
+function closeResendModal() {
+    if (resendSaving.value) return;
+    resendModalOpen.value = false;
+}
+
+async function submitResend(payload: { email: string; subject: string; body: string }) {
+    const email = payload.email.trim();
+    if (!email) {
+        resendError.value = 'Ingresa un correo válido.';
+        return;
+    }
+
+    resendSaving.value = true;
+    resendError.value = '';
+    resendMessage.value = '';
+    try {
+        await resendMailerEmail({
+            email,
+            subject: payload.subject || undefined,
+            body: payload.body || undefined,
+            url: resendAttachmentUrl.value || undefined,
+        });
+        resendMessage.value = 'Correo reenviado.';
+        if (typeof window !== 'undefined') {
+            window.setTimeout(() => {
+                closeResendModal();
+            }, 700);
+        } else {
+            closeResendModal();
+        }
+    } catch (err: any) {
+        resendError.value = err?.response?.data?.message || err?.message || 'No se pudo reenviar el correo.';
+    } finally {
+        resendSaving.value = false;
+    }
+}
+
 watch(search, () => {
     pagination.page = 1;
     scheduleFetch();
@@ -152,6 +217,9 @@ watch(() => pagination.page, (newVal, oldVal) => {
     loadMailers();
 });
 
+watch(filterStatus, () => {
+    pagination.page = 1;
+});
 onMounted(() => {
     loadMailers();
 });
@@ -172,13 +240,23 @@ onUnmounted(() => {
                     <h1 class="text-xl font-semibold text-gray-900">Historial de emails</h1>
                     <p class="text-sm text-gray-500">Consulta los comprobantes enviados por correo y descarga el PDF asociado.</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                     <input
                         v-model="search"
                         type="search"
                         placeholder="Filtrar por correo, asunto o mensaje…"
                         class="w-full sm:w-72 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
                     />
+                    <div class="flex items-center gap-2 text-xs sm:text-sm text-gray-600">
+                        <label class="font-medium text-gray-700">Estado:</label>
+                        <select
+                            v-model="filterStatus"
+                            class="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:border-gray-900 focus:ring-gray-900"
+                        >
+                            <option value="all">Todos</option>
+                            <option value="sent">Enviados</option>
+                        </select>
+                    </div>
                 </div>
             </header>
 
@@ -186,7 +264,10 @@ onUnmounted(() => {
                 <div class="border-b border-gray-200 px-4 py-3 flex items-center justify-between">
                     <div class="text-sm text-gray-600">
                         <span v-if="loading">Cargando historial…</span>
-                        <span v-else-if="pageInfo">Mostrando {{ pageInfo.start }} - {{ pageInfo.end }} de {{ pagination.total }}</span>
+                        <span v-else-if="pageInfo">
+                            Mostrando {{ pageInfo.start }} - {{ pageInfo.end }} de {{ pagination.total }}
+                            <span class="text-xs text-gray-400">| Filtrados: {{ filteredMailers.length }}</span>
+                        </span>
                         <span v-else>Sin registros</span>
                     </div>
                     <div class="flex items-center gap-2 text-sm">
@@ -211,85 +292,136 @@ onUnmounted(() => {
                         </button>
                     </div>
                 </div>
+                <div class="overflow-hidden rounded-xl border border-gray-200">
+                    <div class="hidden lg:block overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead class="bg-gray-50 text-gray-600 uppercase text-xs tracking-wide">
+                                <tr>
+                                    <th class="px-4 py-3 text-left font-medium">ID</th>
+                                    <th class="px-4 py-3 text-left font-medium">Correo</th>
+                                    <th class="px-4 py-3 text-left font-medium">Asunto</th>
+                                    <th class="px-4 py-3 text-left font-medium">Estado</th>
+                                    <th class="px-4 py-3 text-left font-medium">Fecha</th>
+                                    <th class="px-4 py-3 text-left font-medium">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100">
+                                <tr v-if="error">
+                                    <td colspan="6" class="px-4 py-6 text-center text-rose-600">{{ error }}</td>
+                                </tr>
+                                <tr v-else-if="!loading && !hasResults">
+                                    <td colspan="6" class="px-4 py-6 text-center text-gray-500">No hay coincidencias para la búsqueda.</td>
+                                </tr>
+                                <tr
+                                    v-for="item in filteredMailers"
+                                    :key="item.id"
+                                    :class="[
+                                        'hover:bg-gray-50',
+                                        !isValidMailUrl(item.mail) ? 'bg-amber-50/60' : ''
+                                    ]"
+                                >
+                                    <td class="px-4 py-3 font-mono text-xs text-gray-500 whitespace-nowrap">#{{ item.id }}</td>
+                                    <td class="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{{ item.email || '—' }}</td>
+                                    <td class="px-4 py-3 text-sm text-gray-800">
+                                        <div class="max-w-[18rem] truncate" :title="item.asunto">{{ item.asunto }}</div>
+                                        <div class="text-xs text-gray-500 max-w-[18rem] truncate" :title="item.mensaje">{{ item.mensaje }}</div>
+                                    </td>
+                                    <td class="px-4 py-3">
+                                        <span
+                                            class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                                            :class="statusBadgeClass(Number(item.status))"
+                                        >
+                                            {{ statusLabel(Number(item.status)) }}
+                                        </span>
+                                    </td>
+                                    <td class="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{{ formatFecha(item.fecha) }}</td>
+                                    <td class="px-4 py-3">
+                                        <div class="flex flex-wrap justify-end gap-2">
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-800"
+                                                :disabled="!isValidMailUrl(item.mail)"
+                                                @click="isValidMailUrl(item.mail) && openLink(item.mail)"
+                                            >
+                                                Abrir
+                                                <span aria-hidden="true">↗</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-800"
+                                                @click="openResendModal(item)"
+                                            >
+                                                Reenviar
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
 
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200 text-sm">
-                        <thead class="bg-gray-50 text-gray-600 uppercase text-xs tracking-wide">
-                            <tr>
-                                <th class="px-4 py-3 text-left font-medium">ID</th>
-                                <th class="px-4 py-3 text-left font-medium">Archivo</th>
-                                <th class="px-4 py-3 text-left font-medium">Asunto</th>
-                                <th class="px-4 py-3 text-left font-medium">Mensaje</th>
-                                <th class="px-4 py-3 text-left font-medium">Estado</th>
-                                <th class="px-4 py-3 text-left font-medium">Fecha</th>
-                                <th class="px-4 py-3"></th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <tr v-if="error">
-                                <td colspan="7" class="px-4 py-6 text-center text-rose-600">{{ error }}</td>
-                            </tr>
-                            <tr v-else-if="!loading && !hasResults">
-                                <td colspan="7" class="px-4 py-6 text-center text-gray-500">No hay coincidencias para la búsqueda.</td>
-                            </tr>
-                            <tr
-                                v-for="item in mailers"
-                                :key="item.id"
-                                :class="[
-                                    'hover:bg-gray-50',
-                                    !isValidMailUrl(item.mail) ? 'bg-amber-50/60' : ''
-                                ]"
-                            >
-                                <td class="px-4 py-3 font-mono text-xs text-gray-500">#{{ item.id }}</td>
-                                <td class="px-4 py-3">
-                                    <template v-if="isValidMailUrl(item.mail)">
-                                        <button
-                                            type="button"
-                                            class="inline-flex items-center gap-1 text-sm text-gray-700 underline underline-offset-4 hover:text-gray-900"
-                                            @click="openLink(item.mail)"
-                                        >
-                                            Ver PDF
-                                        </button>
-                                    </template>
-                                    <span v-else class="inline-flex items-center rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-700">
-                                        Sin PDF almacenado
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3 font-medium text-gray-800">
-                                    <div class="max-w-xs truncate" :title="item.asunto">{{ item.asunto }}</div>
-                                </td>
-                                <td class="px-4 py-3">
-                                    <div class="max-w-sm truncate" :title="item.mensaje">{{ item.mensaje }}</div>
-                                </td>
-                                <td class="px-4 py-3">
-                                    <span
-                                        class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                                        :class="statusBadgeClass(Number(item.status))"
+                    <div class="lg:hidden divide-y divide-gray-200 bg-white">
+                        <div v-if="error" class="px-4 py-4 text-sm text-rose-600">{{ error }}</div>
+                        <div v-else-if="!loading && !hasResults" class="px-4 py-4 text-sm text-gray-500">No hay coincidencias para la búsqueda.</div>
+                        <div
+                            v-for="item in filteredMailers"
+                            :key="item.id"
+                            class="px-4 py-3 space-y-2 transition hover:bg-gray-50"
+                            :class="!isValidMailUrl(item.mail) ? 'bg-amber-50/60' : 'bg-white'"
+                        >
+                            <div class="flex items-center justify-between text-xs text-gray-500">
+                                <span class="font-mono">#{{ item.id }}</span>
+                                <span>{{ formatFecha(item.fecha) }}</span>
+                            </div>
+                            <div class="text-sm font-medium text-gray-900">{{ item.asunto }}</div>
+                            <div class="text-xs text-gray-500 truncate">{{ item.mensaje }}</div>
+                            <div class="text-xs text-gray-600">{{ item.email || 'Sin correo registrado' }}</div>
+                            <div class="flex items-center gap-2 pt-2">
+                                <span
+                                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium"
+                                    :class="statusBadgeClass(Number(item.status))"
+                                >
+                                    {{ statusLabel(Number(item.status)) }}
+                                </span>
+                                <div class="ml-auto flex gap-2">
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-800"
+                                        :disabled="!isValidMailUrl(item.mail)"
+                                        @click="isValidMailUrl(item.mail) && openLink(item.mail)"
                                     >
-                                        {{ statusLabel(Number(item.status)) }}
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3 text-sm text-gray-600">
-                                    {{ formatFecha(item.fecha) }}
-                                </td>
-                                <td class="px-4 py-3 text-right">
-                                    <template v-if="isValidMailUrl(item.mail)">
-                                        <button
-                                            type="button"
-                                            class="inline-flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-800"
-                                            @click="openLink(item.mail)"
-                                        >
-                                            Abrir
-                                            <span aria-hidden="true">↗</span>
-                                        </button>
-                                    </template>
-                                    <span v-else class="text-xs text-amber-600 uppercase tracking-wide">Sin archivo</span>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                                        Abrir
+                                        <span aria-hidden="true">↗</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="inline-flex items-center gap-1 text-xs uppercase tracking-wide text-gray-500 hover:text-gray-800"
+                                        @click="openResendModal(item)"
+                                    >
+                                        Reenviar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-if="loading" class="px-4 py-4 text-center text-sm text-gray-500">Cargando…</div>
+                    </div>
                 </div>
             </section>
         </div>
+
+        <ResendEmailModal
+            :open="resendModalOpen"
+            :saving="resendSaving"
+            :error="resendError"
+            :message="resendMessage"
+            :initial-email="resendEmail"
+            :initial-subject="resendSubject"
+            :initial-body="resendBody"
+            :attachment-url="resendAttachmentUrl"
+            attachment-label="Abrir comprobante"
+            @close="closeResendModal"
+            @submit="submitResend"
+            @open-attachment="resendAttachmentUrl && openLink(resendAttachmentUrl)"
+        />
     </AppLayout>
 </template>

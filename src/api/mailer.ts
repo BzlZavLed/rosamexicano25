@@ -7,6 +7,7 @@ export type MailerEntry = {
     mensaje: string;
     status: number;
     fecha: string;
+    email?: string | null;
 };
 
 type ListParams = {
@@ -31,4 +32,20 @@ export async function listMailerEntries(params?: ListParams) {
         per_page?: number;
         last_page?: number;
     } | MailerEntry[];
+}
+
+export async function resendMailerEmail(payload: {
+    email: string;
+    subject?: string | null;
+    body?: string | null;
+    pdf?: string | null;
+    url?: string | null;
+}) {
+    const body: Record<string, any> = { email: payload.email };
+    if (payload.subject) body.subject = payload.subject;
+    if (payload.body) body.body = payload.body;
+    if (payload.pdf) body.pdf = payload.pdf;
+    if (payload.url) body.url = payload.url;
+    const { data } = await http.post('/mailer/resend', body);
+    return data;
 }

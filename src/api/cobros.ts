@@ -31,30 +31,51 @@ export async function createCobro(payload: SingleCobroPayload) {
     return data;
 }
 
+export type CobroBatchResponse = {
+    message?: string;
+    created?: number;
+    skipped?: number;
+    mail?: {
+        sent?: number;
+        failed?: number;
+    };
+    data?: Mensualidad[];
+};
+
 export async function createCobrosBatch(payload: BulkCobroPayload) {
     const { data } = await http.post('/mensualidad/bulk', payload);
-    return data;
+    return data as CobroBatchResponse;
 }
 
 export type Mensualidad = {
     id: number;
     proveedor_id: number;
     proveedor_nombre?: string;
+    nombre?: string;
     proveedor_ident?: number;
     concepto: string;
     nota?: string | null;
     importe: number;
     pagado?: number | null;
     restante?: number | null;
+    cantidad_pago?: number | null;
+    pago_completo?: boolean | null;
     mes_cobro: string;
     fecha_cobro: string;
     status: string;
     payment_date?: string | null;
     receipt_path?: string | null;
+    receipt_url?: string | null;
     cobro_path?: string | null;
+    mail_status?: number | null;
     created_at?: string;
     updated_at?: string;
     origen?: 'bulk' | 'single' | string | null;
+    proveedor?: {
+        id?: number;
+        nombre?: string;
+        email?: string | null;
+    } | null;
 };
 
 export type MensualidadListResponse = {
@@ -73,14 +94,15 @@ export type MensualidadPaymentPayload = {
     receipt_pdf_base64: string;
     cantidad_pago?: number;
     restante?: number;
+    pago_completo?: boolean;
     payment_date?: string | null;
     subject?: string | null;
     message?: string | null;
+    email?: string | null;
 };
 
 export async function listMensualidad(params?: { page?: number; per_page?: number; search?: string; mes_cobro?: string; status?: string }) {
     const { data } = await http.get('/mensualidad', { params });
-    console.log(data);
     const rows = Array.isArray((data as any)?.data)
         ? (data as any).data
         : Array.isArray(data)
@@ -105,5 +127,12 @@ export async function listMensualidad(params?: { page?: number; per_page?: numbe
 
 export async function payMensualidad(id: number, payload: MensualidadPaymentPayload) {
     const { data } = await http.post(`/mensualidad/${id}/pay`, payload);
+    return data;
+}
+
+export async function sendMensualidadMail(id: number, payload: { email: string; asunto?: string | null }) {
+    const body: Record<string, any> = { email: payload.email };
+    if (payload.asunto) body.asunto = payload.asunto;
+    const { data } = await http.post(`/mensualidad/${id}/send-mail`, body);
     return data;
 }

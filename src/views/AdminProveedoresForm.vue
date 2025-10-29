@@ -25,6 +25,25 @@ const pageNumbers = computed(() => {
     const pages = Math.max(1, pagination.lastPage || 1);
     return Array.from({ length: pages }, (_, idx) => idx + 1);
 });
+const filterEmailMode = ref<'all' | 'with' | 'without'>('all');
+const filterImporteConValor = ref(false);
+const visibleProveedores = computed(() => {
+    return proveedores.value.filter((p) => {
+        if (filterEmailMode.value === 'with') {
+            const email = (p.email ?? '').trim();
+            if (!email) return false;
+        } else if (filterEmailMode.value === 'without') {
+            const email = (p.email ?? '').trim();
+            if (email) return false;
+        }
+        if (filterImporteConValor.value) {
+            const amount = Number(p.importe ?? 0);
+            if (!Number.isFinite(amount) || amount === 0) return false;
+        }
+        return true;
+    });
+});
+const filteredCountLabel = computed(() => `${visibleProveedores.value.length} / ${proveedores.value.length}`);
 const pageInfo = computed(() => {
     if (!pagination.total) return null;
     const start = (pagination.page - 1) * pagination.perPage + 1;
@@ -58,6 +77,15 @@ const form = reactive<FormT>({
 });
 
 function randIdent(): number { return Math.floor(100000 + Math.random() * 900000); }
+
+function formatCurrency(amount: number, currencyCode = 'MXN', locale = 'es-MX') {
+    if (!Number.isFinite(amount)) return '$0.00';
+    try {
+        return new Intl.NumberFormat(locale, { style: 'currency', currency: currencyCode }).format(amount);
+    } catch {
+        return `$${amount.toFixed(2)}`;
+    }
+}
 
 function resetForm() {
     form.id = null;
@@ -174,6 +202,15 @@ watch(() => pagination.perPage, (newVal, oldVal) => {
 watch(() => pagination.page, (newVal, oldVal) => {
     if (oldVal === undefined || newVal === oldVal) return;
     loadList();
+});
+
+watch([filterEmailMode, filterImporteConValor], () => {
+    if (selectedId.value != null) {
+        const stillVisible = visibleProveedores.value.some((p) => p.id === selectedId.value);
+        if (!stillVisible) {
+            resetForm();
+        }
+    }
 });
 
 onMounted(async () => {
@@ -314,8 +351,12 @@ onMounted(async () => {
                         <p class="text-xs text-gray-500 mt-1">Selecciona un proveedor para cargar sus datos en el
                             formulario.</p>
                     </div>
-                    <div class="text-xs text-gray-500">
-                        Total encontrados: <span class="font-semibold text-gray-800">{{ proveedores.length }}</span>
+                    <div class="text-xs text-gray-500 text-right sm:text-left">
+                        Filtrados en esta página:
+                        <span class="font-semibold text-gray-800">{{ filteredCountLabel }}</span>
+                        <div>
+                            Total catálogo: <span class="font-semibold text-gray-800">{{ pagination.total }}</span>
+                        </div>
                     </div>
                 </div>
 
@@ -324,6 +365,32 @@ onMounted(async () => {
                     <input v-model="q" type="text" placeholder="Nombre, email, teléfono, ciudad…"
                         class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
                 
+                    <div class="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                        <div class="flex items-center gap-2">
+                            <span>Email:</span>
+                            <label class="inline-flex items-center gap-1">
+                                <input type="radio" value="all" v-model="filterEmailMode"
+                                    class="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                                <span>Todos</span>
+                            </label>
+                            <label class="inline-flex items-center gap-1">
+                                <input type="radio" value="with" v-model="filterEmailMode"
+                                    class="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                                <span>Con email</span>
+                            </label>
+                            <label class="inline-flex items-center gap-1">
+                                <input type="radio" value="without" v-model="filterEmailMode"
+                                    class="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                                <span>Sin email</span>
+                            </label>
+                        </div>
+                        <label class="inline-flex items-center gap-2">
+                            <input type="checkbox" v-model="filterImporteConValor"
+                                class="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900">
+                            <span>Importe mensual &gt; 0</span>
+                        </label>
+                    </div>
+
                     <div class="flex flex-col gap-3 text-xs text-gray-600 sm:flex-row sm:items-center sm:justify-between">
                         <div class="flex flex-wrap items-center gap-2">
                             <span>Filas por página:</span>
@@ -356,10 +423,11 @@ onMounted(async () => {
                                 <th class="text-left font-medium px-3 py-2">Tel</th>
                                 <th class="text-left font-medium px-3 py-2">Email</th>
                                 <th class="text-left font-medium px-3 py-2">Ciudad</th>
+                                <th class="text-left font-medium px-3 py-2">Importe</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="p in proveedores" :key="p.id" @click="selectRow(p)"
+                            <tr v-for="p in visibleProveedores" :key="p.id" @click="selectRow(p)"
                                 :class="['cursor-pointer hover:bg-gray-50 transition', selectedId === p.id ? 'bg-gray-100' : '']">
                                 <td class="px-3 py-2">{{ p.id }}</td>
                                 <td class="px-3 py-2">{{ p.ident }}</td>
@@ -367,8 +435,9 @@ onMounted(async () => {
                                 <td class="px-3 py-2">{{ p.tel || '—' }}</td>
                                 <td class="px-3 py-2">{{ p.email || '—' }}</td>
                                 <td class="px-3 py-2">{{ p.ciudad || '—' }}</td>
+                                <td class="px-3 py-2 text-xs sm:text-[12px] whitespace-nowrap">{{ p.importe != null ? formatCurrency(Number(p.importe)) : '—' }}</td>
                             </tr>
-                            <tr v-if="!loading && proveedores.length === 0">
+                            <tr v-if="!loading && visibleProveedores.length === 0">
                                 <td colspan="6" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
                             </tr>
                             <tr v-if="loading">
@@ -379,7 +448,7 @@ onMounted(async () => {
 
                     <!-- Mobile cards -->
                     <div class="md:hidden divide-y divide-gray-100 max-h-80 overflow-auto">
-                        <button v-for="p in proveedores" :key="p.id" @click="selectRow(p)"
+                        <button v-for="p in visibleProveedores" :key="p.id" @click="selectRow(p)"
                             class="w-full text-left p-3 space-y-2 transition hover:bg-gray-50"
                             :class="selectedId === p.id ? 'bg-gray-100' : 'bg-white'">
                             <div class="flex items-center justify-between">
@@ -391,9 +460,10 @@ onMounted(async () => {
                                 <div><span class="font-medium text-gray-700">Email:</span> {{ p.email || '—' }}</div>
                                 <div><span class="font-medium text-gray-700">Ciudad:</span> {{ p.ciudad || '—' }}</div>
                                 <div><span class="font-medium text-gray-700">Banco:</span> {{ p.sucursal || '—' }}</div>
+                                <div class="col-span-2"><span class="font-medium text-gray-700">Importe:</span> {{ p.importe != null ? formatCurrency(Number(p.importe)) : '—' }}</div>
                             </div>
                         </button>
-                        <div v-if="!loading && proveedores.length === 0" class="p-4 text-center text-sm text-gray-500">
+                        <div v-if="!loading && visibleProveedores.length === 0" class="p-4 text-center text-sm text-gray-500">
                             Sin resultados
                         </div>
                         <div v-if="loading" class="p-4 text-center text-sm text-gray-500">Cargando…</div>
