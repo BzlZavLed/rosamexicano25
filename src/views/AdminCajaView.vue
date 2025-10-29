@@ -399,6 +399,7 @@ async function sendTicket() {
         showMessage(successText);
         closeTicketModal();
     } catch (e: any) {
+        console.log('Error sending ticket:', e);
         clientError.value = e?.response?.data?.message || 'No se pudo enviar el ticket';
     } finally {
         ticketSending.value = false;
