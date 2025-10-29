@@ -4,10 +4,25 @@ import SidebarItem from './SidebarItem.vue';
 
 <template>
     <nav class="space-y-2">
-        <div class="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Caja</div>
-        <SidebarItem :to="{ path: '/admin/caja' }" label="Caja">
+        <div class="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Dashboard</div>
+        <SidebarItem :to="{ path: '/dashboard' }" label="Dashboard">
             <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 11l9-7 9 7M5 10v10h14V10" />
+            </svg>
+        </SidebarItem>
+        <div class="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Caja</div>
+        <SidebarItem :to="{ path: '/admin/caja' }" label="Caja">
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                aria-hidden="true">
+                <!-- top: receipt tray + display -->
+                <rect x="7" y="4" width="5" height="3" rx="0.5" stroke-linejoin="round" />
+                <rect x="14" y="4" width="4" height="3" rx="0.5" stroke-linejoin="round" />
+                <!-- body -->
+                <rect x="2" y="9" width="20" height="10" rx="2" />
+                <!-- keypad / controls -->
+                <path stroke-linecap="round" d="M6 12h4M6 14h4M12 12h6" />
+                <!-- drawer handle -->
+                <rect x="9" y="14.5" width="6" height="3" rx="1" />
             </svg>
         </SidebarItem>
 

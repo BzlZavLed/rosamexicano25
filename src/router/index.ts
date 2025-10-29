@@ -15,7 +15,6 @@ const AdminEmailHistory = () => import("../views/AdminEmailHistory.vue");
 const AdminClientes = () => import("../views/AdminClientes.vue");
 const AdminCobros = () => import("../views/AdminCobros.vue");
 
-
 const routes: RouteRecordRaw[] = [
     { path: "/", redirect: "/auth" },
     {
