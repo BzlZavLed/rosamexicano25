@@ -1,8 +1,8 @@
-import http from './http';
+import http from "./http";
 
 export type SingleCobroPayload = {
     fecha_cobro: string; // YYYY-MM-DD
-    mes_cobro: string;   // YYYY-MM
+    mes_cobro: string; // YYYY-MM
     concepto: string;
     nota?: string | null;
     proveedor_id: number;
@@ -27,7 +27,7 @@ export type BulkCobroPayload = {
 };
 
 export async function createCobro(payload: SingleCobroPayload) {
-    const { data } = await http.post('/mensualidad', payload);
+    const { data } = await http.post("/mensualidad", payload);
     return data;
 }
 
@@ -43,7 +43,8 @@ export type CobroBatchResponse = {
 };
 
 export async function createCobrosBatch(payload: BulkCobroPayload) {
-    const { data } = await http.post('/mensualidad/bulk', payload);
+    const { data } = await http.post("/mensualidad/bulk", payload);
+    console.log("createCobrosBatch response data:", data);
     return data as CobroBatchResponse;
 }
 
@@ -70,7 +71,7 @@ export type Mensualidad = {
     mail_status?: number | null;
     created_at?: string;
     updated_at?: string;
-    origen?: 'bulk' | 'single' | string | null;
+    origen?: "bulk" | "single" | string | null;
     proveedor?: {
         id?: number;
         nombre?: string;
@@ -101,8 +102,14 @@ export type MensualidadPaymentPayload = {
     email?: string | null;
 };
 
-export async function listMensualidad(params?: { page?: number; per_page?: number; search?: string; mes_cobro?: string; status?: string }) {
-    const { data } = await http.get('/mensualidad', { params });
+export async function listMensualidad(params?: {
+    page?: number;
+    per_page?: number;
+    search?: string;
+    mes_cobro?: string;
+    status?: string;
+}) {
+    const { data } = await http.get("/mensualidad", { params });
     const rows = Array.isArray((data as any)?.data)
         ? (data as any).data
         : Array.isArray(data)
@@ -111,13 +118,21 @@ export async function listMensualidad(params?: { page?: number; per_page?: numbe
 
     const meta = (data as any)?.meta || {};
     const total = meta?.total ?? (data as any)?.total ?? rows.length;
-    const perPage = meta?.per_page ?? (data as any)?.per_page ?? (params?.per_page ?? rows.length);
-    const lastPage = meta?.last_page ?? (data as any)?.last_page ?? (perPage ? Math.ceil(total / perPage) : 1);
+    const perPage =
+        meta?.per_page ??
+        (data as any)?.per_page ??
+        params?.per_page ??
+        rows.length;
+    const lastPage =
+        meta?.last_page ??
+        (data as any)?.last_page ??
+        (perPage ? Math.ceil(total / perPage) : 1);
 
     return {
         data: rows as Mensualidad[],
         meta: {
-            current_page: meta?.current_page ?? (data as any)?.current_page ?? params?.page ?? 1,
+            current_page:
+                meta?.current_page ?? (data as any)?.current_page ?? params?.page ?? 1,
             per_page: perPage,
             total,
             last_page: lastPage,
@@ -125,14 +140,61 @@ export async function listMensualidad(params?: { page?: number; per_page?: numbe
     } as MensualidadListResponse;
 }
 
-export async function payMensualidad(id: number, payload: MensualidadPaymentPayload) {
+export async function payMensualidad(
+    id: number,
+    payload: MensualidadPaymentPayload
+) {
     const { data } = await http.post(`/mensualidad/${id}/pay`, payload);
     return data;
 }
 
-export async function sendMensualidadMail(id: number, payload: { email: string; asunto?: string | null }) {
+export async function sendMensualidadMail(
+    id: number,
+    payload: { email: string; asunto?: string | null }
+) {
     const body: Record<string, any> = { email: payload.email };
     if (payload.asunto) body.asunto = payload.asunto;
     const { data } = await http.post(`/mensualidad/${id}/send-mail`, body);
     return data;
+}
+
+//WIDGET WRAPPERS
+
+export async function getCobrosResumen(params: {
+    year: number;
+    month: number;
+}) {
+    // If your backend expects yyyy-mm, derive it here:
+    // const ym = `${params.year}-${String(params.month).padStart(2, '0')}`
+
+    // If you already have a "summary" endpoint, call it here.
+    // Otherwise, compute summary from listMensualidad.
+    const mes_cobro = `${params.year}-${String(params.month).padStart(2, '0')}`;
+    const res = await listMensualidad({ mes_cobro });
+    console.log("Cobros resumen data:", res);
+    // Map into the shape the widget expects:
+    const proveedoresConImporte = Array.isArray(res?.data)
+        ? res.data.filter((i: any) => Number(i.importe) > 0).length
+        : 0;
+    const totalMensual = Array.isArray(res?.data)
+        ? res.data.reduce((sum: number, i: any) => sum + Number(i.importe || 0), 0)
+        : 0;
+    // Decide business rule for canRunBulk (example: if any item pending)
+    const canRunBulk = proveedoresConImporte > 0;
+
+    return { proveedoresConImporte, totalMensual, canRunBulk };
+}
+
+export async function runBulkCobros(params: { year: number; month: number }) {
+    // Construct mes_cobro and fecha_cobro from year and month
+    const mes_cobro = `${params.year}-${String(params.month).padStart(2, '0')}`;
+    const fecha_cobro = `${params.year}-${String(params.month).padStart(2, '0')}-01`;
+    // You may want to adjust concepto, nota, and cobros as needed
+    return createCobrosBatch({
+        concepto: "",
+        mes_cobro,
+        fecha_cobro,
+        nota: null,
+        cobros: [],
+    });
 }

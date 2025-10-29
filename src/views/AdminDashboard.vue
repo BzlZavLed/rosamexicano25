@@ -1,7 +1,11 @@
 <!-- src/pages/AdminDashboard.vue -->
 <script setup lang="ts">
+import { defineAsyncComponent } from 'vue'
 import AppLayout from '../components/layout/AppLayout.vue'
-import MailerQuotaWidget from '../components/widgets/MailerQuotaWidget.vue'
+
+// Lazy-load widgets (optional but nice for perf)
+const MailerQuotaWidget = defineAsyncComponent(() => import('../components/widgets/MailerQuotaWidget.vue'))
+const MonthlyCobrosWidget = defineAsyncComponent(() => import('../components/widgets/MonthlyCobrosWidget.vue'))
 </script>
 
 <template>
@@ -14,8 +18,25 @@ import MailerQuotaWidget from '../components/widgets/MailerQuotaWidget.vue'
 
             <!-- Widgets row -->
             <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mt-4">
-                <MailerQuotaWidget />
-                <!-- Add more widgets here as you build them -->
+                <Suspense>
+                    <MailerQuotaWidget />
+                    <template #fallback>
+                        <div class="h-28 rounded-2xl border border-gray-200 bg-white shadow-sm animate-pulse" />
+                    </template>
+                </Suspense>
+
+                <Suspense>
+                    <MonthlyCobrosWidget
+                        detailsRoute="/admin/cobros"
+                        currency="MXN"
+                        locale="es-MX"
+                    />
+                    <template #fallback>
+                        <div class="h-28 rounded-2xl border border-gray-200 bg-white shadow-sm animate-pulse" />
+                    </template>
+                </Suspense>
+
+                <!-- Future widgets go here -->
             </div>
         </div>
     </AppLayout>
