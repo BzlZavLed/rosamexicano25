@@ -417,6 +417,7 @@ onMounted(async () => {
 
 <template>
     <AppLayout>
+        <div class="space-y-8">
         <div class="bg-white border border-gray-200 rounded-xl shadow p-6">
             <h2 class="text-2xl font-semibold mb-6">Crear producto</h2>
 
@@ -560,14 +561,55 @@ onMounted(async () => {
             </div>
 
             <!-- ===== SEARCH / TABLE (moved below the form) ===== -->
-            <div class="mt-10">
-                <div class="mb-3">
+            <div class="mt-10 space-y-4">
+                <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Buscar / Consultar</label>
                     <input v-model="q" type="text" placeholder="Nombre, descripción, código…"
                         class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
                 </div>
 
-                <div class="max-h-96 overflow-auto border border-gray-200 rounded-lg">
+                <div class="space-y-3 md:hidden">
+                    <div
+                        v-if="loading"
+                        class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-4 text-sm text-gray-600"
+                    >
+                        Cargando…
+                    </div>
+                    <div
+                        v-else-if="!productos.length"
+                        class="rounded-lg border border-gray-200 bg-white px-4 py-4 text-sm text-gray-500"
+                    >
+                        Sin resultados
+                    </div>
+                    <template v-else>
+                        <article
+                            v-for="p in productos"
+                            :key="p.id"
+                            class="space-y-2 rounded-lg border border-gray-200 bg-white p-4 text-sm shadow-sm"
+                            :class="selectedId === p.id ? 'ring-2 ring-gray-300' : ''"
+                            @click="selectRow(p)"
+                        >
+                            <div class="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                    <p class="text-xs uppercase text-gray-500">Identificador</p>
+                                    <p class="font-semibold text-gray-900">{{ p.ident }}</p>
+                                </div>
+                                <div class="text-right text-xs text-gray-500">
+                                    ID interno: <span class="font-medium text-gray-800">{{ p.id }}</span>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-xs uppercase text-gray-500">Nombre</p>
+                                <p class="font-medium text-gray-900">{{ p.nombre }}</p>
+                            </div>
+                            <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-600">
+                                <span>Proveedor: <b class="text-gray-800">{{ p.proveedor?.nombre ?? 'Sin asignar' }}</b></span>
+                                <span>Precio: <b class="text-gray-900">{{ displayMoney(p.precio) }}</b></span>
+                            </div>
+                        </article>
+                    </template>
+                </div>
+                <div class="max-h-96 overflow-auto border border-gray-200 rounded-lg hidden md:block">
                     <table class="min-w-full text-sm">
                         <thead class="bg-gray-50 text-gray-500">
                             <tr>
@@ -588,10 +630,10 @@ onMounted(async () => {
                                 <td class="px-3 py-2 text-right">{{ displayMoney(p.precio) }}</td>
                             </tr>
                             <tr v-if="!loading && productos.length === 0">
-                                <td colspan="4" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
+                                <td colspan="5" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
                             </tr>
                             <tr v-if="loading">
-                                <td colspan="4" class="px-3 py-3 text-center text-gray-500">Cargando…</td>
+                                <td colspan="5" class="px-3 py-3 text-center text-gray-500">Cargando…</td>
                             </tr>
                         </tbody>
                     </table>
@@ -627,10 +669,12 @@ onMounted(async () => {
             </div>
 
             <!-- ===== CSV UPLOAD ===== -->
-            <div class="mt-8 space-y-2">
+            <div class="mt-8 space-y-3">
                 <label class="block text-sm font-medium text-gray-700">Subir archivo de productos (CSV)</label>
-                <div class="flex items-center justify-between gap-3">
-                    <span class="text-xs text-gray-500">Descarga la plantilla, captura tus productos y súbela como CSV.</span>
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span class="text-xs text-gray-500">
+                        Descarga la plantilla, captura tus productos y súbela como CSV.
+                    </span>
                     <button type="button" @click="downloadTemplate" :disabled="downloadingTemplate"
                         class="inline-flex items-center justify-center rounded-lg border px-2.5 py-2 text-sm hover:bg-gray-50 disabled:opacity-60 transition"
                         aria-label="Descargar plantilla CSV">
@@ -655,6 +699,7 @@ onMounted(async () => {
                     Subir archivo
                 </button>
             </div>
+        </div>
         </div>
     </AppLayout>
 </template>
