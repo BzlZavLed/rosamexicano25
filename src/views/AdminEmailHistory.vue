@@ -173,6 +173,9 @@ function openResendModal(entry: MailerEntry) {
 function closeResendModal() {
     if (resendSaving.value) return;
     resendModalOpen.value = false;
+    resendAttachmentUrl.value = null;
+    resendError.value = '';
+    resendMessage.value = '';
 }
 
 async function submitResend(payload: { email: string; subject: string; body: string }) {
@@ -193,6 +196,7 @@ async function submitResend(payload: { email: string; subject: string; body: str
             url: resendAttachmentUrl.value || undefined,
         });
         resendMessage.value = 'Correo reenviado.';
+        await loadMailers();
         if (typeof window !== 'undefined') {
             window.setTimeout(() => {
                 closeResendModal();

@@ -1,7 +1,7 @@
 // src/api/cashier.ts
 import http from './http'; // your axios instance with baseURL + auth
 
-export type CashMethod = 'efectivo' | 'debit' | 'credit';
+export type CashMethod = 'efectivo' | 'tarjeta' | 'transferencia';
 
 export type CashierFindParams = {
     barcode?: number | string;
@@ -31,12 +31,21 @@ export async function findProduct(params: CashierFindParams) {
     return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
 }
 
-export async function checkout(payload: {
-    items: Array<{ ident: number; qty: number }>;
+export type CheckoutItemPayload = {
+    ident: number;
+    qty: number;
+    discount_percent?: number;
+    discount_amount?: number;
+};
+
+export type CheckoutPayload = {
+    items: CheckoutItemPayload[];
     discount_percent?: number;
     payment: { method: CashMethod; received?: number };
-    ie: number;
-}) {
+    ie?: number;
+};
+
+export async function checkout(payload: CheckoutPayload) {
     const { data } = await http.post('/cashier/checkout', payload);
     return data; // { data: {...} }
 }

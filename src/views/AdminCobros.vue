@@ -979,7 +979,7 @@ onUnmounted(() => {
                 </p>
             </header>
 
-            <section class="grid gap-6 xl:gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <section class="grid gap-6 lg:grid-cols-2 lg:items-start xl:grid-cols-[minmax(0,1fr)_360px] xl:gap-8">
                 <div class="space-y-6">
                     <div class="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                         <div class="flex flex-col gap-1">
@@ -1266,7 +1266,7 @@ onUnmounted(() => {
                         <h2 class="text-lg font-semibold text-gray-900">Cobros registrados</h2>
                         <p class="text-sm text-gray-500">Revisa los cobros generados, ya sean individuales o en lote.</p>
                     </div>
-                    <div class="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                    <div class="grid gap-3 text-sm text-gray-600 md:grid-cols-2 xl:flex xl:flex-wrap xl:items-center">
                         <label class="flex flex-col">
                             <span class="font-medium text-gray-700">Buscar</span>
                             <input
@@ -1307,7 +1307,7 @@ onUnmounted(() => {
                                 <option value="sent">Enviados</option>
                             </select>
                         </label>
-                        <div class="mt-6 flex items-center gap-2">
+                        <div class="flex items-center gap-2 mt-2 md:col-span-2 xl:mt-0">
                             <button
                                 type="button"
                                 class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
@@ -1326,8 +1326,142 @@ onUnmounted(() => {
                     </div>
                 </header>
 
-                <div class="mt-5">
-                    <div class="-mx-3 overflow-x-auto">
+                <div class="mt-5 space-y-4">
+                    <div class="md:hidden">
+                        <div
+                            v-if="cobrosError"
+                            class="rounded-xl border border-red-100 bg-red-50 px-4 py-4 text-sm text-red-600"
+                        >
+                            {{ cobrosError }}
+                        </div>
+                        <div
+                            v-else-if="cobrosLoading"
+                            class="rounded-xl border border-gray-200 bg-gray-50 px-4 py-4 text-sm text-gray-500"
+                        >
+                            Cargando cobros…
+                        </div>
+                        <div
+                            v-else-if="!filteredCobros.length"
+                            class="rounded-xl border border-gray-200 bg-white px-4 py-4 text-sm text-gray-500"
+                        >
+                            No hay cobros para los filtros seleccionados.
+                        </div>
+                        <div v-else class="space-y-4">
+                            <article
+                                v-for="c in filteredCobros"
+                                :key="c.id ?? `${c.proveedor_id}-${c.mes_cobro}`"
+                                class="space-y-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+                            >
+                                <div class="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                        <p class="font-semibold text-gray-900">{{ c.nombre }}</p>
+                                        <p class="text-xs text-gray-500">
+                                            ID interno: {{ c.proveedor_ident ?? c.proveedor_id }}
+                                        </p>
+                                        <p class="text-xs text-gray-500">
+                                            Origen: {{ c.origen ? c.origen : (c.status ? 'individual' : '—') }}
+                                        </p>
+                                    </div>
+                                    <div class="text-right">
+                                        <span
+                                            class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                                            :class="statusBadgeClass(c.status)"
+                                        >
+                                            {{ formatStatus(c.status) }}
+                                        </span>
+                                        <p v-if="c.payment_date" class="mt-1 text-xs text-gray-500">
+                                            Pago: {{ formatDateLabel(c.payment_date) }}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-2 text-sm text-gray-600">
+                                    <div>
+                                        <p class="font-medium text-gray-700">Concepto</p>
+                                        <p class="text-gray-800">{{ c.concepto }}</p>
+                                        <p v-if="c.nota" class="mt-1 text-xs text-gray-500">
+                                            {{ c.nota }}
+                                        </p>
+                                    </div>
+                                    <div class="flex flex-wrap gap-x-4 gap-y-1">
+                                        <div>
+                                            <span class="font-medium text-gray-700">Importe:</span>
+                                            <span class="ml-1 font-semibold text-gray-900">
+                                                {{ formatCurrency(Number(c.importe ?? 0)) }}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <span class="font-medium text-gray-700">Mes:</span>
+                                            <span class="ml-1">{{ formatMonthLabel(c.mes_cobro) }}</span>
+                                        </div>
+                                        <div>
+                                            <span class="font-medium text-gray-700">Cargo:</span>
+                                            <span class="ml-1">{{ formatDateLabel(c.fecha_cobro) }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="flex flex-col gap-2 text-sm text-gray-600">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="font-medium text-gray-700">Nota de cobro:</span>
+                                        <template v-if="c.cobro_path">
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center gap-1 text-sm text-gray-700 underline underline-offset-4 hover:text-gray-900"
+                                                @click="openPdfInNewTab(c.cobro_path)"
+                                            >
+                                                Ver PDF
+                                            </button>
+                                        </template>
+                                        <span v-else class="text-xs text-gray-400">Sin archivo</span>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="font-medium text-gray-700">Comprobante:</span>
+                                        <template v-if="c.receipt_path">
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center gap-1 text-sm text-gray-700 underline underline-offset-4 hover:text-gray-900"
+                                                @click="openPdfInNewTab(c.receipt_path)"
+                                            >
+                                                Ver PDF
+                                            </button>
+                                        </template>
+                                        <span v-else class="text-xs text-gray-400">Sin registro</span>
+                                    </div>
+                                </div>
+
+                                <div class="flex flex-col gap-2 text-sm text-gray-600">
+                                    <span class="font-medium text-gray-700">Acciones</span>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                            @click="openPaymentModal(c)"
+                                        >
+                                            Registrar pago
+                                        </button>
+                                        <template v-if="Number(c.mail_status ?? 0) === 0">
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center justify-center rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-200"
+                                                :disabled="!c.cobro_path"
+                                                @click="openEmailModal(c)"
+                                            >
+                                                Enviar correo
+                                            </button>
+                                        </template>
+                                        <template v-else>
+                                            <span class="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                                                Correo enviado
+                                            </span>
+                                        </template>
+                                    </div>
+                                </div>
+                            </article>
+                        </div>
+                    </div>
+
+                    <div class="-mx-3 hidden overflow-x-auto md:block">
                         <div class="inline-block min-w-full align-middle px-3">
                             <div class="overflow-hidden rounded-xl border border-gray-200">
                                 <table class="min-w-full divide-y divide-gray-200 text-sm">
@@ -1351,7 +1485,7 @@ onUnmounted(() => {
                                                 {{ cobrosError }}
                                             </td>
                                         </tr>
-                                        <tr v-else-if="!cobrosLoading && !cobros.length">
+                                        <tr v-else-if="!cobrosLoading && !filteredCobros.length">
                                             <td colspan="10" class="px-4 py-6 text-center text-sm text-gray-500">
                                                 No hay cobros registrados con los filtros seleccionados.
                                             </td>

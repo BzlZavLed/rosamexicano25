@@ -15,7 +15,9 @@ import {
     sendSaleTicket,
     registerExpense,
     type CashMethod,
-    type CashMovementPayload
+    type CashMovementPayload,
+    type CheckoutItemPayload,
+    type CheckoutPayload
 } from '../api/cashier';
 import { searchClientes, createCliente, type Cliente } from '../api/clientes';
 import { jsPDF } from 'jspdf';
@@ -42,6 +44,7 @@ type CartRow = {
     promoDiscountPct?: number;
     promoFreeQty?: number;
     promoNote?: string;
+    manualDiscount?: number;
 };
 
 type SaleSnapshot = {
@@ -51,6 +54,7 @@ type SaleSnapshot = {
     subtotal: number;
     promoDiscount: number;
     manualDiscount: number;
+    manualItemDiscount: number;
     totalDiscount: number;
     afterDiscount: number;
     surchargePercent: number;
@@ -128,6 +132,21 @@ const linePromoDiscount = (row: CartRow) => {
     return Math.round((percentDiscount + bundleDiscount) * 100) / 100;
 };
 
+const lineGross = (row: CartRow) => Math.max(0, row.precio * row.qty);
+
+function clampManualDiscount(row: CartRow) {
+    const promoDiscount = linePromoDiscount(row);
+    const maxDiscount = Math.max(0, lineGross(row) - promoDiscount);
+    const manual = Math.max(0, Math.min(Number(row.manualDiscount ?? 0) || 0, maxDiscount));
+    row.manualDiscount = Math.round(manual * 100) / 100;
+    return row.manualDiscount;
+}
+
+const lineManualDiscount = (row: CartRow) => Math.max(0, Number(row.manualDiscount ?? 0));
+
+const lineNet = (row: CartRow) =>
+    Math.max(0, lineGross(row) - linePromoDiscount(row) - lineManualDiscount(row));
+
 /** Raw total before discounts or surcharges. */
 const subTotal = computed(() => cart.value.reduce((sum, row) => sum + row.precio * row.qty, 0));
 
@@ -136,22 +155,23 @@ const promoDiscountAmount = computed(() =>
     Math.round(cart.value.reduce((sum, row) => sum + linePromoDiscount(row), 0) * 100) / 100
 );
 
+const manualItemDiscountAmount = computed(() =>
+    Math.round(cart.value.reduce((sum, row) => sum + lineManualDiscount(row), 0) * 100) / 100
+);
+
 /** Cashier-entered manual percent discount applied to the entire cart. */
 const discountAmount = computed(() =>
     Math.round((subTotal.value * (discountPercent.value || 0) / 100) * 100) / 100
 );
 
-const totalDiscountAmount = computed(() => discountAmount.value + promoDiscountAmount.value);
-
-const effectiveDiscountPercentForBE = computed(() => {
-    if (subTotal.value <= 0) return 0;
-    return Math.round((totalDiscountAmount.value / subTotal.value) * 10000) / 100;
-});
+const totalDiscountAmount = computed(() =>
+    discountAmount.value + promoDiscountAmount.value + manualItemDiscountAmount.value
+);
 
 /** Net total after discounts but before card surcharge is applied. */
 const afterDiscount = computed(() => Math.max(0, subTotal.value - totalDiscountAmount.value));
-/** Surcharge only applies to credit card operations; currently a fixed 4.5%. */
-const surchargePercent = computed(() => paymentMethod.value === 'credit' ? 4.5 : 0);
+/** Surcharge only applies to tarjeta operations; currently a fixed 4.5%. */
+const surchargePercent = computed(() => paymentMethod.value === 'tarjeta' ? 4.5 : 0);
 const surchargeAmount = computed(() => Math.round((afterDiscount.value * surchargePercent.value / 100) * 100) / 100);
 const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.value) * 100) / 100);
 
@@ -220,7 +240,7 @@ function showMessage(text: string) {
 }
 
 function showError(text: string) {
-    clearError();
+    //clearError();
     error.value = text;
     errorTimer = window.setTimeout(() => {
         error.value = '';
@@ -247,7 +267,6 @@ function clearTicketState() {
 }
 
 function openTicketModal(snapshot: SaleSnapshot) {
-    console.log('Opening ticket modal for sale', snapshot);
     lastSaleSnapshot.value = snapshot;
     ticketSendChannel.value = 'email';
     clearTicketState();
@@ -294,6 +313,7 @@ function captureSaleSnapshot(ventaId: number, sourceRows: CartRow[] = cart.value
         subtotal: subTotal.value,
         promoDiscount: promoDiscountAmount.value,
         manualDiscount: discountAmount.value,
+        manualItemDiscount: manualItemDiscountAmount.value,
         totalDiscount: totalDiscountAmount.value,
         afterDiscount: afterDiscount.value,
         surchargePercent: surchargePercent.value,
@@ -501,6 +521,8 @@ async function applyPromotionsToRow(row: CartRow, proveedorIdent?: number) {
     }
 
     if (noteParts.length) row.promoNote = noteParts.join(' · ');
+
+    clampManualDiscount(row);
 }
 
 /** Runs the remote search and handles loading/errors for the quick lookup list. */
@@ -591,6 +613,7 @@ async function addToCart(producto: Producto) {
     if (row) {
         if (row.qty < max) row.qty++;
         await applyPromotionsToRow(row, producto.proveedorid);
+        clampManualDiscount(row);
         return;
     }
 
@@ -602,6 +625,7 @@ async function addToCart(producto: Producto) {
         existencia: max,
         qty: max > 0 ? 1 : 0,
         proveedorid: producto.proveedorid,
+        manualDiscount: 0,
     };
 
     await applyPromotionsToRow(newRow, producto.proveedorid);
@@ -624,6 +648,12 @@ function clampQty(row: CartRow) {
     row.qty = Math.trunc(Number(row.qty) || 0);
     if (row.qty < 0) row.qty = 0;
     if (row.qty > row.existencia) row.qty = row.existencia;
+    clampManualDiscount(row);
+}
+
+function onManualDiscountChange(row: CartRow) {
+    row.manualDiscount = Math.max(0, Number(row.manualDiscount ?? 0) || 0);
+    clampManualDiscount(row);
 }
 
 /** Refreshes the caja status banner (open/closed, current user, balances). */
@@ -709,7 +739,7 @@ async function submitExpense() {
         ie: 0,
         concepto: expenseForm.concepto.trim(),
     };
-
+    console.log('Submitting expense payload:', payload);
     expenseSaving.value = true;
     try {
         await registerExpense(payload);
@@ -734,7 +764,17 @@ async function onCheckout() {
         return;
     }
 
-    const items = cart.value.filter(row => row.qty > 0).map(row => ({ ident: row.ident, qty: row.qty }));
+    const items: CheckoutItemPayload[] = cart.value
+        .filter(row => row.qty > 0)
+        .map(row => {
+            const item: CheckoutItemPayload = {
+                ident: row.ident,
+                qty: row.qty,
+            };
+            const discountAmount = Math.round((linePromoDiscount(row) + lineManualDiscount(row)) * 100) / 100;
+            if (discountAmount > 0) item.discount_amount = discountAmount;
+            return item;
+        });
     if (!items.length) {
         showError('Carrito vacío');
         return;
@@ -750,15 +790,20 @@ async function onCheckout() {
 
     saving.value = true;
     try {
-        const payload = {
+        const payload: CheckoutPayload = {
             items,
-            discount_percent: effectiveDiscountPercentForBE.value,
             payment: {
                 method: paymentMethod.value,
-                ...(paymentMethod.value === 'efectivo' ? { received: Number(cashReceived.value ?? 0) } : {})
             },
-            ie: 1
         };
+
+        if (paymentMethod.value === 'efectivo') {
+            payload.payment.received = Number(cashReceived.value ?? 0);
+        }
+        if (discountPercent.value > 0) {
+            payload.discount_percent = discountPercent.value;
+        }
+        payload.ie = 1;
 
         const res = await checkout(payload);
         const ventaId = res?.data?.venta?.idventa;
@@ -849,21 +894,41 @@ function buildReceiptPDF(snapshot: SaleSnapshot) {
             y += lineGap - 2;
         }
 
-        const lineDiscount = linePromoDiscount(row);
+        const promoDiscount = linePromoDiscount(row);
+        const manualDiscount = lineManualDiscount(row);
         const gross = row.precio * row.qty;
-        const net = Math.max(0, gross - lineDiscount);
+        const net = Math.max(0, gross - promoDiscount - manualDiscount);
 
         pageBreakIfNeeded();
         doc.text(`${row.qty} × ${money(row.precio)}`, xL, y);
-        doc.text(money(net), xMidRight, y, { align: 'right' }); y += lineGap;
+        doc.text(money(gross), xMidRight, y, { align: 'right' });
+        y += lineGap;
 
-        if (lineDiscount > 0) {
+        if (promoDiscount > 0) {
             pageBreakIfNeeded();
             doc.setFontSize(9);
-            doc.text('Descuento aplicado', xL, y);
-            doc.text(`- ${money(lineDiscount)}`, xMidRight, y, { align: 'right' });
+            doc.text('Promoción aplicada', xL, y);
+            doc.text(`- ${money(promoDiscount)}`, xMidRight, y, { align: 'right' });
             doc.setFontSize(10);
             y += lineGap - 2;
+        }
+
+        if (manualDiscount > 0) {
+            pageBreakIfNeeded();
+            doc.setFontSize(9);
+            doc.text('Desc. manual', xL, y);
+            doc.text(`- ${money(manualDiscount)}`, xMidRight, y, { align: 'right' });
+            doc.setFontSize(10);
+            y += lineGap - 2;
+        }
+
+        if (promoDiscount > 0 || manualDiscount > 0) {
+            pageBreakIfNeeded();
+            doc.setFont('helvetica', 'bold');
+            doc.text('Total línea', xL, y);
+            doc.text(money(net), xMidRight, y, { align: 'right' });
+            doc.setFont('helvetica', 'normal');
+            y += lineGap;
         }
 
         y += 2;
@@ -872,7 +937,8 @@ function buildReceiptPDF(snapshot: SaleSnapshot) {
     hr();
     rowR('Subtotal', money(snapshot.subtotal));
     if (snapshot.promoDiscount) rowR('Promociones', `- ${money(snapshot.promoDiscount)}`);
-    if (snapshot.manualDiscount) rowR('Desc. manual', `- ${money(snapshot.manualDiscount)}`);
+    if (snapshot.manualDiscount) rowR('Desc. general', `- ${money(snapshot.manualDiscount)}`);
+    if (snapshot.manualItemDiscount) rowR('Desc. por producto', `- ${money(snapshot.manualItemDiscount)}`);
     if (snapshot.surchargeAmount) rowR(`Recargo ${snapshot.surchargePercent}%`, money(snapshot.surchargeAmount));
     rowR('TOTAL', money(snapshot.total), true);
 
@@ -923,32 +989,37 @@ onUnmounted(() => {
         <div class="space-y-4">
 
             <!-- Caja banner -->
-            <div v-if="caja.open"
-                class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 flex items-center justify-between">
-                <div class="text-emerald-800 text-sm">
+            <div
+                v-if="caja.open"
+                class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-3 text-sm text-emerald-800 sm:flex sm:items-center sm:justify-between sm:space-y-0"
+            >
+                <div>
                     <b>Caja abierta</b>
                     <span v-if="caja.caja?.saldoinicial"> · Saldo inicial: {{ currency(Number(caja.caja.saldoinicial))
                     }}</span>
                     <span v-if="caja.caja?.usuario"> · Por: {{ caja.caja.usuario }}</span>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <input v-model.number="closeAmount" type="number" step="0.01" placeholder="Saldo sistema (opcional)"
-                        class="rounded border px-2 py-1 text-sm">
+                        class="w-full rounded border px-3 py-2 text-sm sm:w-48">
                     <button :disabled="saving" @click="closeCaja"
-                        class="rounded bg-rose-600 hover:bg-rose-700 text-white text-sm px-3 py-1.5">Cerrar
+                        class="w-full rounded bg-rose-600 text-white text-sm px-3 py-2 transition hover:bg-rose-700 disabled:opacity-60 sm:w-auto">Cerrar
                         caja</button>
                 </div>
             </div>
 
-            <div v-else class="rounded-lg border border-amber-200 bg-amber-50 p-3 flex items-center justify-between">
-                <div class="text-amber-800 text-sm">
+            <div
+                v-else
+                class="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3 text-sm text-amber-800 sm:flex sm:items-center sm:justify-between sm:space-y-0"
+            >
+                <div>
                     <b>Caja cerrada</b> · Abre para poder vender
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <input v-model.number="openAmount" type="number" step="0.01" placeholder="Saldo inicial"
-                        class="rounded border px-2 py-1 text-sm">
+                        class="w-full rounded border px-3 py-2 text-sm sm:w-48">
                     <button :disabled="saving || openAmount == null" @click="openCaja"
-                        class="rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-3 py-1.5">Abrir
+                        class="w-full rounded bg-emerald-600 text-white text-sm px-3 py-2 transition hover:bg-emerald-700 disabled:opacity-60 sm:w-auto">Abrir
                         caja</button>
                 </div>
             </div>
@@ -974,46 +1045,100 @@ onUnmounted(() => {
                 </div>
 
                 <!-- Results (compact) -->
-                <div v-if="SHOW_RESULTS" class="border rounded-md max-h-56 overflow-auto">
-                    <table class="min-w-full text-xs">
-                        <thead class="bg-gray-50 text-gray-500 sticky top-0 z-10">
-                            <tr>
-                                <th class="text-left font-medium px-2.5 py-1.5">Ident</th>
-                                <th class="text-left font-medium px-2.5 py-1.5">Producto</th>
-                                <th class="text-right font-medium px-2.5 py-1.5">Precio</th>
-                                <th class="text-right font-medium px-2.5 py-1.5">Exist.</th>
-                                <th class="px-2.5 py-1.5"></th>
-                            </tr>
-                        </thead>
-                        <tbody class="[&>tr:nth-child(even)]:bg-gray-50/60">
-                            <tr v-for="p in results" :key="p.id" class="hover:bg-gray-50">
-                                <td class="px-2.5 py-1.5 whitespace-nowrap">{{ p.ident }}</td>
-                                <td class="px-2.5 py-1.5">
-                                    <div class="truncate max-w-[28ch]">{{ p.nombre }}</div>
-                                </td>
-                                <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
-                                    {{ new
-                                        Intl.NumberFormat('es-MX', { style: 'currency',currency:'MXN'}).format(Number(p.precio))
-                                    }}
-                                </td>
-                                <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
-                                    {{ Number(p?.inventario?.existencia ?? 0) }}
-                                </td>
-                                <td class="px-2.5 py-1.5 text-right">
-                                    <button @click="addToCart(p)"
-                                        class="rounded border px-2 py-1 text-[12px] hover:bg-gray-100">
+                <div v-if="SHOW_RESULTS" class="border rounded-md max-h-60 overflow-y-auto">
+                    <div class="p-3 space-y-3 md:hidden">
+                        <div
+                            v-if="loading"
+                            class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-xs text-gray-600"
+                        >
+                            Buscando…
+                        </div>
+                        <div
+                            v-else-if="!results.length"
+                            class="rounded-lg border border-gray-200 bg-white px-3 py-3 text-xs text-gray-500"
+                        >
+                            Sin resultados
+                        </div>
+                        <ul v-else class="space-y-3">
+                            <li
+                                v-for="p in results"
+                                :key="p.id"
+                                class="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm"
+                            >
+                                <div class="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                        <p class="font-semibold text-gray-900">{{ p.nombre }}</p>
+                                        <p class="text-[11px] text-gray-500">Identificador: {{ p.ident }}</p>
+                                    </div>
+                                    <div class="text-right">
+                                        <p class="font-semibold text-gray-900">
+                                            {{
+                                                new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(
+                                                    Number(p.precio)
+                                                )
+                                            }}
+                                        </p>
+                                        <p class="text-[11px] text-gray-500">
+                                            Existencia: {{ Number(p?.inventario?.existencia ?? 0) }}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="mt-3 flex justify-end">
+                                    <button
+                                        @click="addToCart(p)"
+                                        class="inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+                                    >
                                         Agregar
                                     </button>
-                                </td>
-                            </tr>
-                            <tr v-if="!loading && results.length === 0">
-                                <td colspan="5" class="px-2.5 py-2.5 text-center text-gray-500">Sin resultados</td>
-                            </tr>
-                            <tr v-if="loading">
-                                <td colspan="5" class="px-2.5 py-2.5 text-center text-gray-500">Buscando…</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="hidden md:block">
+                        <table class="min-w-full text-xs">
+                            <thead class="bg-gray-50 text-gray-500 sticky top-0 z-10">
+                                <tr>
+                                    <th class="text-left font-medium px-2.5 py-1.5">Ident</th>
+                                    <th class="text-left font-medium px-2.5 py-1.5">Producto</th>
+                                    <th class="text-right font-medium px-2.5 py-1.5">Precio</th>
+                                    <th class="text-right font-medium px-2.5 py-1.5">Exist.</th>
+                                    <th class="px-2.5 py-1.5"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="[&>tr:nth-child(even)]:bg-gray-50/60">
+                                <tr v-for="p in results" :key="p.id" class="hover:bg-gray-50">
+                                    <td class="px-2.5 py-1.5 whitespace-nowrap">{{ p.ident }}</td>
+                                    <td class="px-2.5 py-1.5">
+                                        <div class="truncate max-w-[28ch]">{{ p.nombre }}</div>
+                                    </td>
+                                    <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
+                                        {{
+                                            new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(
+                                                Number(p.precio)
+                                            )
+                                        }}
+                                    </td>
+                                    <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
+                                        {{ Number(p?.inventario?.existencia ?? 0) }}
+                                    </td>
+                                    <td class="px-2.5 py-1.5 text-right">
+                                        <button
+                                            @click="addToCart(p)"
+                                            class="rounded border px-2 py-1 text-[12px] hover:bg-gray-100"
+                                        >
+                                            Agregar
+                                        </button>
+                                    </td>
+                                </tr>
+                                <tr v-if="!loading && results.length === 0">
+                                    <td colspan="5" class="px-2.5 py-2.5 text-center text-gray-500">Sin resultados</td>
+                                </tr>
+                                <tr v-if="loading">
+                                    <td colspan="5" class="px-2.5 py-2.5 text-center text-gray-500">Buscando…</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </section>
 
@@ -1022,68 +1147,160 @@ onUnmounted(() => {
                 <section class="flex-1 space-y-3 text-[13px] leading-tight">
                     <div class="border rounded-md overflow-hidden">
                         <div class="px-3 py-2 border-b text-xs font-semibold tracking-wide text-gray-700">Carrito</div>
-                        <div class="overflow-x-auto">
-                            <table class="min-w-full text-xs">
-                                <thead class="bg-gray-50 text-gray-500 sticky top-0 z-10">
-                                    <tr>
-                                        <th class="text-left font-medium px-2.5 py-1.5">Ident</th>
-                                        <th class="text-left font-medium px-2.5 py-1.5">Producto</th>
-                                        <th class="text-left font-medium px-2.5 py-1.5">Proveedor</th>
-                                        <th class="text-right font-medium px-2.5 py-1.5">P. Unit.</th>
-                                        <th class="text-right font-medium px-2.5 py-1.5">Exist.</th>
-                                        <th class="text-right font-medium px-2.5 py-1.5">Cantidad</th>
-                                        <th class="text-right font-medium px-2.5 py-1.5">Importe</th>
-                                        <th class="px-2.5 py-1.5"></th>
-                                    </tr>
-                                </thead>
-                                <tbody class="[&>tr:nth-child(even)]:bg-gray-50/60">
-                                    <tr v-for="r in cart" :key="r.ident" class="align-middle">
-                                        <td class="px-2.5 py-1.5 whitespace-nowrap">{{ r.ident }}</td>
-                                        <td class="px-2.5 py-1.5">
-                                            <div class="truncate max-w-[28ch]">{{ r.nombre }}</div>
-                                            <div v-if="r.promoNote" class="text-[11px] text-emerald-700">
+                        <div class="p-3 space-y-3 md:hidden">
+                            <div
+                                v-if="cart.length === 0"
+                                class="rounded-lg border border-gray-200 bg-white px-3 py-4 text-xs text-gray-500"
+                            >
+                                No hay productos en el carrito
+                            </div>
+                            <template v-else>
+                                <article
+                                    v-for="r in cart"
+                                    :key="`mobile-${r.ident}`"
+                                    class="space-y-3 rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-sm"
+                                >
+                                    <div class="flex flex-wrap items-start justify-between gap-2">
+                                        <div>
+                                            <p class="font-semibold text-gray-900">{{ r.nombre }}</p>
+                                            <p class="text-[11px] text-gray-500">Identificador: {{ r.ident }}</p>
+                                            <p v-if="r.proveedorname" class="text-[11px] text-gray-500">
+                                                Proveedor: {{ r.proveedorname }}
+                                            </p>
+                                            <p v-if="r.promoNote" class="text-[11px] text-emerald-700">
                                                 {{ r.promoNote }}
-                                            </div>
-                                        </td>
-                                        <td class="px-2.5 py-1.5 text-right">
-                                            <span class="truncate inline-block max-w-[18ch]">{{ r.proveedorname }}</span>
-                                        </td>
-                                        <td class="px-2.5 py-1.5 text-right whitespace-nowrap">{{ currency(r.precio) }}</td>
-                                        <td class="px-2.5 py-1.5 text-right">{{ r.existencia }}</td>
-                                        <td class="px-2.5 py-1.5 text-right">
-                                            <input v-model.number="r.qty" @change="onQtyChange(r)" type="number" min="0"
+                                            </p>
+                                        </div>
+                                        <div class="text-right">
+                                            <p class="font-semibold text-gray-900">{{ currency(lineNet(r)) }}</p>
+                                            <p class="text-[11px] text-gray-500">Existencia: {{ r.existencia }}</p>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-3 text-[12px] text-gray-600">
+                                        <label class="flex flex-col gap-1">
+                                            <span class="font-medium text-gray-700">Cantidad</span>
+                                            <input
+                                                v-model.number="r.qty"
+                                                @change="onQtyChange(r)"
+                                                type="number"
+                                                min="0"
                                                 :max="r.existencia"
-                                                class="w-20 rounded border px-2 py-1 text-right text-[12px]" />
-                                            <div v-if="(r.promoFreeQty ?? 0) > 0" class="text-[11px] text-gray-500">
+                                                class="w-full rounded-md border px-2.5 py-1.5 text-right text-sm"
+                                            />
+                                            <span v-if="(r.promoFreeQty ?? 0) > 0" class="text-[11px] text-gray-500">
                                                 Cobrar: {{ Math.max(0, r.qty - (r.promoFreeQty ?? 0)) }}
+                                            </span>
+                                        </label>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <span class="font-medium text-gray-700">P. unitario</span>
+                                                <div class="text-sm text-gray-900">{{ currency(r.precio) }}</div>
                                             </div>
-                                        </td>
-                                        <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
-                                            {{
-                                                new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' })
-                                                    .format(r.precio * Math.max(0, r.qty - (r.promoFreeQty ?? 0)) * (1 -
-                                            (r.promoDiscountPct ?? 0)/100))
-                                            }}
-                                        </td>
-                                        <td class="px-2.5 py-1.5 text-right">
-                                            <button @click="removeFromCart(r.ident)"
-                                                class="rounded border px-2 py-1 text-[12px] hover:bg-gray-100">
-                                                Quitar
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    <tr v-if="cart.length === 0">
-                                        <td colspan="8" class="px-2.5 py-4 text-center text-gray-500">No hay productos en
-                                            el carrito</td>
-                                    </tr>
-                                </tbody>
-                            </table>
+                                            <div>
+                                                <span class="font-medium text-gray-700">Desc. aplicado</span>
+                                                <div class="text-sm text-emerald-700">
+                                                    - {{
+                                                        currency(
+                                                            linePromoDiscount(r) + lineManualDiscount(r)
+                                                        )
+                                                    }}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <label class="flex flex-col gap-1">
+                                            <span class="font-medium text-gray-700">Desc. manual ($)</span>
+                                            <input
+                                                v-model.number="r.manualDiscount"
+                                                @change="onManualDiscountChange(r)"
+                                                type="number"
+                                                min="0"
+                                                step="0.01"
+                                                class="w-full rounded-md border px-2.5 py-1.5 text-right text-sm"
+                                            />
+                                        </label>
+                                    </div>
+                                    <div class="flex flex-wrap justify-end gap-2">
+                                        <button
+                                            @click="removeFromCart(r.ident)"
+                                            class="inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+                                        >
+                                            Quitar
+                                        </button>
+                                    </div>
+                                </article>
+                            </template>
+                        </div>
+                        <div class="hidden md:block">
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full text-xs">
+                                    <thead class="bg-gray-50 text-gray-500 sticky top-0 z-10">
+                                        <tr>
+                                            <th class="text-left font-medium px-2.5 py-1.5">Ident</th>
+                                            <th class="text-left font-medium px-2.5 py-1.5">Producto</th>
+                                            <th class="text-left font-medium px-2.5 py-1.5">Proveedor</th>
+                                            <th class="text-right font-medium px-2.5 py-1.5">P. Unit.</th>
+                                            <th class="text-right font-medium px-2.5 py-1.5">Exist.</th>
+                                            <th class="text-right font-medium px-2.5 py-1.5">Cantidad</th>
+                                            <th class="text-right font-medium px-2.5 py-1.5">Desc. ($)</th>
+                                            <th class="text-right font-medium px-2.5 py-1.5">Importe</th>
+                                            <th class="px-2.5 py-1.5"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="[&>tr:nth-child(even)]:bg-gray-50/60">
+                                        <tr v-for="r in cart" :key="r.ident" class="align-middle">
+                                            <td class="px-2.5 py-1.5 whitespace-nowrap">{{ r.ident }}</td>
+                                            <td class="px-2.5 py-1.5">
+                                                <div class="truncate max-w-[28ch]">{{ r.nombre }}</div>
+                                                <div v-if="r.promoNote" class="text-[11px] text-emerald-700">
+                                                    {{ r.promoNote }}
+                                                </div>
+                                            </td>
+                                            <td class="px-2.5 py-1.5 text-right">
+                                                <span class="truncate inline-block max-w-[18ch]">{{ r.proveedorname }}</span>
+                                            </td>
+                                            <td class="px-2.5 py-1.5 text-right whitespace-nowrap">{{ currency(r.precio) }}</td>
+                                            <td class="px-2.5 py-1.5 text-right">{{ r.existencia }}</td>
+                                            <td class="px-2.5 py-1.5 text-right">
+                                                <input v-model.number="r.qty" @change="onQtyChange(r)" type="number" min="0"
+                                                    :max="r.existencia"
+                                                    class="w-20 rounded border px-2 py-1 text-right text-[12px]" />
+                                                <div v-if="(r.promoFreeQty ?? 0) > 0" class="text-[11px] text-gray-500">
+                                                    Cobrar: {{ Math.max(0, r.qty - (r.promoFreeQty ?? 0)) }}
+                                                </div>
+                                            </td>
+                                            <td class="px-2.5 py-1.5 text-right">
+                                                <input
+                                                    v-model.number="r.manualDiscount"
+                                                    @change="onManualDiscountChange(r)"
+                                                    type="number"
+                                                    min="0"
+                                                    step="0.01"
+                                                    class="w-20 rounded border px-2 py-1 text-right text-[12px]"
+                                                />
+                                            </td>
+                                            <td class="px-2.5 py-1.5 text-right whitespace-nowrap">
+                                                {{ currency(lineNet(r)) }}
+                                            </td>
+                                            <td class="px-2.5 py-1.5 text-right">
+                                                <button @click="removeFromCart(r.ident)"
+                                                    class="rounded border px-2 py-1 text-[12px] hover:bg-gray-100">
+                                                    Quitar
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        <tr v-if="cart.length === 0">
+                                            <td colspan="9" class="px-2.5 py-4 text-center text-gray-500">No hay productos en
+                                                el carrito</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </section>
 
                 <!-- Totals & Payment -->
-                <section class="space-y-3 text-[13px] leading-tight lg:w-80 lg:shrink-0">
+                <section class="w-full space-y-3 text-[13px] leading-tight lg:w-80 lg:shrink-0">
                     <div class="border rounded-md p-3 space-y-3">
                         <div>
                             <label class="block text-xs font-medium text-gray-600 mb-1">Descuento (%)</label>
@@ -1098,7 +1315,11 @@ onUnmounted(() => {
                                 <b class="text-emerald-700">- {{ currency(promoDiscountAmount) }}</b>
                             </div>
                             <div class="flex justify-between">
-                                <span>Descuento manual</span><b>- {{ currency(discountAmount) }}</b>
+                                <span>Desc. general</span><b>- {{ currency(discountAmount) }}</b>
+                            </div>
+                            <div class="flex justify-between" v-if="manualItemDiscountAmount">
+                                <span>Desc. por producto</span>
+                                <b class="text-emerald-700">- {{ currency(manualItemDiscountAmount) }}</b>
                             </div>
                             <div class="flex justify-between">
                                 <span>Recargo {{ surchargePercent ? `(${surchargePercent}%)` : '' }}</span>
@@ -1111,13 +1332,13 @@ onUnmounted(() => {
 
                         <div>
                             <label class="block text-xs font-medium text-gray-600 mb-1">Método de pago</label>
-                            <div class="flex gap-2">
+                            <div class="flex flex-wrap gap-2">
                                 <button @click="paymentMethod = 'efectivo'"
                                     :class="['px-2.5 py-1.5 rounded border text-xs', paymentMethod === 'efectivo' ? 'bg-gray-900 text-white' : '']">Efectivo</button>
-                                <button @click="paymentMethod = 'debit'"
-                                    :class="['px-2.5 py-1.5 rounded border text-xs', paymentMethod === 'debit' ? 'bg-gray-900 text-white' : '']">Débito</button>
-                                <button @click="paymentMethod = 'credit'"
-                                    :class="['px-2.5 py-1.5 rounded border text-xs', paymentMethod === 'credit' ? 'bg-gray-900 text-white' : '']">Crédito</button>
+                                <button @click="paymentMethod = 'tarjeta'"
+                                    :class="['px-2.5 py-1.5 rounded border text-xs', paymentMethod === 'tarjeta' ? 'bg-gray-900 text-white' : '']">Tarjeta</button>
+                                <button @click="paymentMethod = 'transferencia'"
+                                    :class="['px-2.5 py-1.5 rounded border text-xs', paymentMethod === 'transferencia' ? 'bg-gray-900 text-white' : '']">Transferencia</button>
                             </div>
                         </div>
 
