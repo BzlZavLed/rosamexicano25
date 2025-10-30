@@ -1,6 +1,6 @@
 <!-- src/components/widgets/MonthlyCobrosWidget.vue -->
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { jsPDF } from 'jspdf';
 
 // Proveedores API (list)
@@ -152,10 +152,6 @@ function generateCobroPdf(proveedor: Proveedor, ctx: PdfContext) {
 
     return { base64: pdfBase64, filename };
 }
-// ---------- Month pickers (used for payloads) ----------
-const selectedMonth = ref<string>(currentMonth())
-
-
 // ---------- State ----------
 const loadingProveedores = ref(false)
 const proveedoresError = ref('')
@@ -169,11 +165,11 @@ const bulkSkipped = ref<number | null>(null)
 const bulkMailStats = ref<{ sent: number; failed: number } | null>(null)
 const bulkState = ref({ running: false, successCount: 0 })
 
+const DEFAULT_FECHA_COBRO = todayISO()
+const DEFAULT_NOTA = 'Cobro generado desde dashboard'
+
 const bulkForm = ref({
     mes_cobro: currentMonth(),
-    fecha_cobro: todayISO(),
-    concepto: defaultBulkConcept(currentMonth()),
-    nota: '',
 })
 
 // ---------- Data loading ----------
@@ -207,6 +203,15 @@ const totalMensual = computed(() =>
 
 const canRunBulk = computed(() => proveedoresConImporte.value.length > 0 && !bulkState.value.running)
 
+function cobroDefaults(mes: string | undefined) {
+    const month = mes && mes.trim() ? mes : currentMonth()
+    return {
+        concepto: defaultBulkConcept(month),
+        fecha_cobro: DEFAULT_FECHA_COBRO,
+        nota: DEFAULT_NOTA,
+    }
+}
+
 // ---------- Actions ----------
 async function runMonthlyCobros() {
     bulkState.value.running = true
@@ -220,18 +225,16 @@ async function runMonthlyCobros() {
 
     const form = bulkForm.value
 
-    if (!form.mes_cobro || !form.fecha_cobro) {
-        bulkError.value = 'Selecciona el mes y la fecha de cargo.'
+    if (!form.mes_cobro) {
+        bulkError.value = 'Selecciona el mes del cobro.'
         bulkState.value.running = false
         return
     }
 
-    const concepto = form.concepto?.trim()
-    if (!concepto) {
-        bulkError.value = 'Indica un concepto para el cobro.'
-        bulkState.value.running = false
-        return
-    }
+    const baseDefaults = cobroDefaults(form.mes_cobro)
+    const concepto = baseDefaults.concepto
+    const fechaCobro = baseDefaults.fecha_cobro
+    const nota = baseDefaults.nota
 
     const objetivos = proveedoresConImporte.value
     if (!objetivos.length) {
@@ -240,15 +243,13 @@ async function runMonthlyCobros() {
         return
     }
 
-    const nota = form.nota?.trim() || null
-
     // Build PDF + payload per proveedor
     const detalles = objetivos.map((proveedor) => {
         const importe = Math.round(Number(proveedor.importe ?? 0) * 100) / 100
         const { base64 } = generateCobroPdf(proveedor, {
             concepto,
             importe,
-            fecha_cobro: form.fecha_cobro,
+            fecha_cobro: fechaCobro,
             mes_cobro: form.mes_cobro,
             nota,
         })
@@ -262,7 +263,7 @@ async function runMonthlyCobros() {
     const batchPayload = {
         concepto,
         mes_cobro: form.mes_cobro,
-        fecha_cobro: form.fecha_cobro,
+        fecha_cobro: fechaCobro,
         nota,
         cobros: detalles.map(({ proveedor, importe, pdfBase64 }) => ({
             proveedor_id: proveedor.id,
@@ -270,7 +271,6 @@ async function runMonthlyCobros() {
             cobro_pdf_base64: pdfBase64,
         })),
     }
-    console.log(batchPayload)
     try {
         // Prefer batch when possible
         if (batchPayload.cobros.length > 1) {
@@ -278,7 +278,6 @@ async function runMonthlyCobros() {
                 const resp: any = await createCobrosBatch({
                     ...batchPayload
                 })
-                console.log('Batch cobros response:', resp);
                 const created = resp?.created ?? resp?.data?.length ?? batchPayload.cobros.length
                 const skipped = resp?.skipped ?? 0
                 const mailSent = resp?.mail?.sent ?? null
@@ -316,7 +315,7 @@ async function runMonthlyCobros() {
         for (const detalle of detalles) {
             try {
                 await createCobro({
-                    fecha_cobro: form.fecha_cobro,
+                    fecha_cobro: fechaCobro,
                     mes_cobro: form.mes_cobro,
                     concepto,
                     nota,
@@ -350,73 +349,95 @@ async function runMonthlyCobros() {
 }
 
 onMounted(loadProveedores)
+
+watch(
+    () => bulkForm.value.mes_cobro,
+    (newVal) => {
+        if (!newVal) return
+        bulkMessage.value = ''
+        bulkError.value = ''
+    }
+)
 </script>
 
 <template>
     <div class="sm:col-span-2 xl:col-span-2 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <!-- Header -->
-        <div class="flex items-center justify-between gap-3">
-            <h3 class="text-base font-semibold text-gray-900">Cobros mensuales</h3>
-
-            <label class="flex items-center gap-2 text-xs text-gray-500 shrink-0">
-                <span class="hidden sm:inline">Mes</span>
-                <div class="relative">
-                    <svg class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400"
-                        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="4" width="18" height="18" rx="2" />
-                        <path d="M16 2v4M8 2v4M3 10h18" />
-                    </svg>
-                    <input id="month" type="month" v-model="selectedMonth" class="peer w-[220px] rounded-xl border border-gray-200 bg-white pl-9 pr-3 py-2 text-sm text-gray-900 shadow-sm outline-none
-                   focus:ring-2 focus:ring-gray-900/10 focus:border-gray-300" />
-                </div>
-            </label>
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+                <h3 class="text-base font-semibold text-gray-900">Cobros mensuales</h3>
+            </div>
+            <router-link :to="detailsRoute"
+                class="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900/10">
+                Ver más opciones
+            </router-link>
         </div>
 
-        <!-- Summary -->
-        <div class="mt-4 rounded-xl bg-gray-50 p-4">
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div class="min-w-0">
-                    <p class="text-sm text-gray-500">
-                        Proveedores programados:
-                        <span class="font-semibold text-gray-900">{{ proveedoresConImporte.length }}</span>
-                    </p>
-                    <p class="text-sm text-gray-500">
-                        Total estimado:
-                        <span class="text-lg font-semibold text-gray-900">{{ formatCurrency(totalMensual) }}</span>
-                    </p>
+        <div class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_360px] items-start">
+            <div class="space-y-4 rounded-xl border border-gray-100 bg-gray-50 p-5">
+                <input
+                    v-model="bulkForm.mes_cobro"
+                    type="month"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900"
+                    aria-label="Mes a cobrar"
+                />
+                <div class="space-y-1.5 text-xs text-gray-500">
+                    <p>Fecha de cargo: <span class="font-semibold text-gray-800">{{ formatDateLabel(DEFAULT_FECHA_COBRO) }}</span></p>
+                    <p>Concepto: <span class="font-semibold text-gray-800">{{ defaultBulkConcept(bulkForm.mes_cobro) }}</span></p>
+                    <p>Notas: <span class="font-semibold text-gray-800">{{ DEFAULT_NOTA }}</span></p>
+                </div>
+            </div>
+
+            <aside class="space-y-4 rounded-xl border border-gray-100 bg-gray-50 p-5">
+                <div class="space-y-2">
+                    <p class="text-xs uppercase tracking-wide text-gray-500">Resumen mensual</p>
+                    <div class="flex flex-col gap-2">
+                        <div class="flex items-center justify-between text-sm text-gray-600">
+                            <span>Proveedores programados</span>
+                            <span class="font-semibold text-gray-900">{{ proveedoresConImporte.length }}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-sm text-gray-600">
+                            <span>Total estimado</span>
+                            <span class="text-base font-semibold text-gray-900">{{ formatCurrency(totalMensual) }}</span>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="flex flex-wrap items-center justify-start gap-2 sm:justify-end shrink-0">
-                    <router-link :to="detailsRoute"
-                        class="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700
-                    hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900/10 whitespace-nowrap">
-                        Ver detalles
-                    </router-link>
-
-                    <button type="button" :disabled="!canRunBulk" @click="runMonthlyCobros"
-                        class="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300 whitespace-nowrap">
-                        <svg v-if="bulkState.running" class="mr-2 h-4 w-4 animate-spin"
-                            xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+                <div class="space-y-2">
+                    <button
+                        type="button"
+                        :disabled="!canRunBulk"
+                        @click="runMonthlyCobros"
+                        class="inline-flex w-full items-center justify-center rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                    >
+                        <svg
+                            v-if="bulkState.running"
+                            class="mr-2 h-4 w-4 animate-spin"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                        >
                             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" opacity="0.25" />
-                            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4"
-                                stroke-linecap="round" />
+                            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
                         </svg>
                         <span v-if="bulkState.running">Generando cobros…</span>
-                        <span v-else>Generar cobros del mes</span>
+                        <span v-else>Generar cobros</span>
                     </button>
+                    <p class="text-center text-[11px] text-gray-500">
+                        Se crearán PDFs y se enviarán al backend.
+                    </p>
                 </div>
-            </div>
+            </aside>
+        </div>
 
-            <div class="mt-2 space-y-1">
-                <p v-if="loadingProveedores" class="text-xs text-gray-500">Cargando proveedores…</p>
-                <p v-if="bulkMessage" class="text-xs text-green-700">{{ bulkMessage }}</p>
-                <p v-if="proveedoresError || bulkError" class="text-xs text-red-600">
-                    {{ proveedoresError || bulkError }}
-                </p>
-                <p v-if="bulkFailures.length" class="text-xs text-amber-700">
-                    Fallidos: {{ bulkFailures.length }}
-                </p>
-            </div>
+        <div class="mt-4 space-y-1 text-xs">
+            <p v-if="loadingProveedores" class="text-gray-500">Cargando proveedores…</p>
+            <p v-if="bulkMessage" class="text-emerald-700">{{ bulkMessage }}</p>
+            <p v-if="proveedoresError || bulkError" class="text-rose-600">
+                {{ proveedoresError || bulkError }}
+            </p>
+            <p v-if="bulkFailures.length" class="text-amber-600">
+                Fallidos: {{ bulkFailures.length }}
+            </p>
         </div>
     </div>
 </template>
