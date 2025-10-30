@@ -154,8 +154,7 @@ function generateCobroPdf(proveedor: Proveedor, ctx: PdfContext) {
 }
 // ---------- Month pickers (used for payloads) ----------
 const selectedMonth = ref<string>(currentMonth())
-const selectedYear = computed(() => Number(selectedMonth.value.split('-')[0]))
-const selectedMonthNum = computed(() => Number(selectedMonth.value.split('-')[1]))
+
 
 // ---------- State ----------
 const loadingProveedores = ref(false)
