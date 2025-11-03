@@ -63,6 +63,8 @@ type SaleSnapshot = {
     paymentMethod: CashMethod;
     cashReceived: number;
     change: number;
+    providerSurcharge: Array<{ proveedor_id: number; nombre: string; amount: number; percent: number }>;
+    providerNetTotals: Array<{ proveedor_id: number; nombre: string; total: number }>;
 };
 
 // Reactive state -------------------------------------------------
@@ -147,6 +149,32 @@ const lineManualDiscount = (row: CartRow) => Math.max(0, Number(row.manualDiscou
 const lineNet = (row: CartRow) =>
     Math.max(0, lineGross(row) - linePromoDiscount(row) - lineManualDiscount(row));
 
+const providerTotals = computed(() => {
+    const map = new Map<number, { cantidad: number; total: number }>();
+    for (const row of cart.value) {
+        const proveedorId = (row.proveedorid ?? (row as any).proveedorid) ?? 0;
+        if (!proveedorId) continue;
+        const entry = map.get(proveedorId) ?? { cantidad: 0, total: 0 };
+        entry.cantidad += row.qty;
+        entry.total += lineNet(row);
+        map.set(proveedorId, entry);
+    }
+    return map;
+});
+
+const providerPercentages = computed(() => {
+    const totals = providerTotals.value;
+    const sumCantidad = Array.from(totals.values()).reduce((acc, item) => acc + item.cantidad, 0);
+    if (!sumCantidad) return new Map<number, number>();
+    const percentMap = new Map<number, number>();
+    for (const [pid, info] of totals.entries()) {
+        percentMap.set(pid, info.cantidad / sumCantidad);
+    }
+    return percentMap;
+});
+
+const providerSurchargeRemainder = ref(0);
+
 /** Raw total before discounts or surcharges. */
 const subTotal = computed(() => cart.value.reduce((sum, row) => sum + row.precio * row.qty, 0));
 
@@ -173,7 +201,89 @@ const afterDiscount = computed(() => Math.max(0, subTotal.value - totalDiscountA
 /** Surcharge only applies to tarjeta operations; currently a fixed 4.5%. */
 const surchargePercent = computed(() => paymentMethod.value === 'tarjeta' ? 4.5 : 0);
 const surchargeAmount = computed(() => Math.round((afterDiscount.value * surchargePercent.value / 100) * 100) / 100);
-const total = computed(() => Math.round((afterDiscount.value + surchargeAmount.value) * 100) / 100);
+const providerSurcharge = computed(() => {
+    if (paymentMethod.value !== 'tarjeta') {
+        providerSurchargeRemainder.value = 0;
+        return new Map<number, number>();
+    }
+    const percents = providerPercentages.value;
+    const allocations = new Map<number, number>();
+    const ordered = Array.from(percents.entries()).sort((a, b) => b[1] - a[1]);
+    let totalAllocated = 0;
+    for (const [pid, percent] of ordered) {
+        const portion = Math.round(surchargeAmount.value * percent * 100) / 100;
+        if (portion > 0) {
+            allocations.set(pid, portion);
+            totalAllocated += portion;
+        }
+    }
+    let remainder = Math.round((surchargeAmount.value - totalAllocated) * 100) / 100;
+    if (remainder !== 0 && ordered.length) {
+        const [pid] = ordered[0];
+        const current = allocations.get(pid) ?? 0;
+        allocations.set(pid, Math.round((current + remainder) * 100) / 100);
+        totalAllocated += remainder;
+        remainder = 0;
+    }
+    providerSurchargeRemainder.value = remainder;
+    return allocations;
+});
+
+const providerNetAfterSurcharge = computed(() => {
+    const totals = providerTotals.value;
+    const surcharges = providerSurcharge.value;
+    const result = new Map<number, number>();
+    for (const [pid, info] of totals.entries()) {
+        const surcharge = surcharges.get(pid) ?? 0;
+        result.set(pid, Math.max(0, info.total - surcharge));
+    }
+    return result;
+});
+
+const providerInfoMap = computed(() => {
+    const info = new Map<number, { nombre: string }>();
+    for (const row of cart.value) {
+        const proveedorId = (row.proveedorid ?? (row as any).proveedorid) ?? 0;
+        if (!proveedorId || info.has(proveedorId)) continue;
+        const nombre =
+            row.proveedorname ||
+            (row as any).proveedor?.nombre ||
+            `Proveedor ${proveedorId}`;
+        info.set(proveedorId, { nombre });
+    }
+    return info;
+});
+
+const providerSurchargeList = computed(() =>
+    Array.from(providerSurcharge.value.entries()).map(([proveedor_id, amount]) => {
+        const info = providerInfoMap.value.get(proveedor_id);
+        const percent = providerPercentages.value.get(proveedor_id) ?? 0;
+        return {
+            proveedor_id,
+            nombre: info?.nombre ?? `Proveedor ${proveedor_id}`,
+            amount,
+            percent: Math.round(percent * 10000) / 100,
+        };
+    })
+);
+
+const providerNetTotalsList = computed(() =>
+    Array.from(providerNetAfterSurcharge.value.entries()).map(([proveedor_id, total]) => {
+        const info = providerInfoMap.value.get(proveedor_id);
+        return {
+            proveedor_id,
+            nombre: info?.nombre ?? `Proveedor ${proveedor_id}`,
+            total,
+        };
+    })
+);
+const total = computed(() => {
+    const base = Math.round(afterDiscount.value * 100) / 100;
+    if (paymentMethod.value === 'tarjeta') {
+        return base;
+    }
+    return Math.round((afterDiscount.value + surchargeAmount.value) * 100) / 100;
+});
 
 const changeDue = computed(() => {
     if (paymentMethod.value !== 'efectivo') return 0;
@@ -306,6 +416,18 @@ function selectClientSuggestion(cliente: Cliente) {
 }
 
 function captureSaleSnapshot(ventaId: number, sourceRows: CartRow[] = cart.value): SaleSnapshot {
+    const surchargeBreakdown = providerSurchargeList.value.map((item) => ({
+        proveedor_id: item.proveedor_id,
+        nombre: item.nombre,
+        amount: item.amount,
+        percent: item.percent,
+    }));
+    const providerNet = providerNetTotalsList.value.map((item) => ({
+        proveedor_id: item.proveedor_id,
+        nombre: item.nombre,
+        total: item.total,
+    }));
+
     return {
         idventa: ventaId,
         fecha: new Date().toISOString().slice(0, 10),
@@ -322,6 +444,8 @@ function captureSaleSnapshot(ventaId: number, sourceRows: CartRow[] = cart.value
         paymentMethod: paymentMethod.value,
         cashReceived: paymentMethod.value === 'efectivo' ? Number(cashReceived.value ?? 0) : total.value,
         change: paymentMethod.value === 'efectivo' ? changeDue.value : 0,
+        providerSurcharge: surchargeBreakdown,
+        providerNetTotals: providerNet,
     };
 }
 
@@ -805,6 +929,21 @@ async function onCheckout() {
         }
         payload.ie = 1;
 
+        if (paymentMethod.value === 'tarjeta') {
+            const surchargeEntries = Array.from(providerSurcharge.value.entries())
+                .filter(([, amount]) => amount > 0)
+                .map(([proveedor_id, amount]) => ({ proveedor_id, amount }));
+            if (surchargeEntries.length) {
+                payload.provider_surcharge = surchargeEntries;
+            }
+
+            const netEntries = Array.from(providerNetAfterSurcharge.value.entries())
+                .map(([proveedor_id, total]) => ({ proveedor_id, total }));
+            if (netEntries.length) {
+                payload.provider_net_totals = netEntries;
+            }
+        }
+
         const res = await checkout(payload);
         const ventaId = res?.data?.venta?.idventa;
         const snapshot = captureSaleSnapshot(ventaId ?? Date.now());
@@ -941,6 +1080,36 @@ function buildReceiptPDF(snapshot: SaleSnapshot) {
     if (snapshot.manualItemDiscount) rowR('Desc. por producto', `- ${money(snapshot.manualItemDiscount)}`);
     if (snapshot.surchargeAmount) rowR(`Recargo ${snapshot.surchargePercent}%`, money(snapshot.surchargeAmount));
     rowR('TOTAL', money(snapshot.total), true);
+
+    if (snapshot.paymentMethod === 'tarjeta' && snapshot.providerSurcharge?.length) {
+        hr();
+        doc.setFont('helvetica', 'bold');
+        doc.text('Distribución de recargo (tarjeta)', xL, y); y += lineGap;
+        doc.setFont('helvetica', 'normal');
+        snapshot.providerSurcharge.forEach((entry) => {
+            const provider = snapshot.providerNetTotals.find((p) => p.proveedor_id === entry.proveedor_id);
+            const label = provider ? provider.nombre ?? `Proveedor ${entry.proveedor_id}` : `Proveedor ${entry.proveedor_id}`;
+            pageBreakIfNeeded();
+            const percent = typeof entry.percent === 'number' ? ` (${entry.percent.toFixed(2)}%)` : '';
+            doc.text(`- ${label}${percent}`, xL, y);
+            doc.text(`-${money(entry.amount)}`, xMidRight, y, { align: 'right' });
+            y += lineGap - 2;
+        });
+        const netTotals = snapshot.providerNetTotals ?? [];
+        if (netTotals.length) {
+            pageBreakIfNeeded();
+            doc.setFont('helvetica', 'bold');
+            doc.text('Neto por proveedor', xL, y); y += lineGap;
+            doc.setFont('helvetica', 'normal');
+            netTotals.forEach((entry) => {
+                pageBreakIfNeeded();
+                doc.text(`• ${entry.nombre ?? `Proveedor ${entry.proveedor_id}`}`, xL, y);
+                doc.text(money(entry.total), xMidRight, y, { align: 'right' });
+                y += lineGap - 2;
+            });
+        }
+    }
+
 
     hr();
     rowR('Método', snapshot.paymentMethod.toUpperCase());
@@ -1322,8 +1491,51 @@ onUnmounted(() => {
                                 <b class="text-emerald-700">- {{ currency(manualItemDiscountAmount) }}</b>
                             </div>
                             <div class="flex justify-between">
-                                <span>Recargo {{ surchargePercent ? `(${surchargePercent}%)` : '' }}</span>
-                                <b>{{ currency(surchargeAmount) }}</b>
+                                <span>
+                                    Recargo
+                                    <template v-if="paymentMethod === 'tarjeta'">
+                                        (cubierto por proveedores)
+                                    </template>
+                                    <template v-else-if="surchargePercent">
+                                        ({{ surchargePercent }}%)
+                                    </template>
+                                </span>
+                                <b>{{ currency(paymentMethod === 'tarjeta' ? 0 : surchargeAmount) }}</b>
+                            </div>
+                            <div
+                                v-if="paymentMethod === 'tarjeta' && providerSurchargeList.length"
+                                class="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs text-gray-600"
+                            >
+                                <p class="font-medium text-gray-700">Distribución del recargo</p>
+                                <ul class="mt-1 space-y-1">
+                                    <li
+                                        v-for="item in providerSurchargeList"
+                                        :key="item.proveedor_id"
+                                        class="flex items-center justify-between gap-2"
+                                    >
+                                        <span class="truncate">{{ item.nombre }}</span>
+                                        <span class="text-right text-gray-700">
+                                            <span class="mr-2 text-[11px] text-gray-500">{{ item.percent.toFixed(2) }}%</span>
+                                            <b class="font-semibold text-gray-900">-{{ currency(item.amount) }}</b>
+                                        </span>
+                                    </li>
+                                </ul>
+                                <div
+                                    v-if="providerNetTotalsList.length"
+                                    class="mt-2 rounded border border-gray-200 bg-white/70 px-2 py-2 text-[11px] text-gray-500"
+                                >
+                                    <p class="font-medium text-gray-700">Importe neto por proveedor:</p>
+                                    <ul class="mt-1 space-y-1">
+                                        <li
+                                            v-for="item in providerNetTotalsList"
+                                            :key="`net-${item.proveedor_id}`"
+                                            class="flex items-center justify-between gap-2"
+                                        >
+                                            <span class="truncate">{{ item.nombre }}</span>
+                                            <span class="font-semibold text-gray-800">{{ currency(item.total) }}</span>
+                                        </li>
+                                    </ul>
+                                </div>
                             </div>
                             <div class="flex justify-between text-base">
                                 <span>Total</span><b>{{ currency(total) }}</b>

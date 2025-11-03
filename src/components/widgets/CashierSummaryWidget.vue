@@ -103,19 +103,33 @@ onMounted(loadSummary);
                 </div>
 
                 <!-- Métodos de pago -->
-                <div class="rounded-xl border border-gray-100 bg-gray-50 p-4">
-                    <div v-for="m in (summary.metodos || [])" :key="m.metodo"
-                        class="rounded-xl border border-gray-100 bg-gray-50 p-4">
-                        <p class="text-xs uppercase tracking-wide text-gray-500">
-                            {{ m.metodo }}
-                        </p>
-                        <p class="mt-1 text-sm font-semibold text-gray-900">
-                            {{ formatCurrency(m.total) }}
-                            <span v-if="m.transacciones != null" class="ml-2 text-xs font-normal text-gray-500">
-                                ({{ m.transacciones }} transacciones)
-                            </span>
-                        </p>
+                <div class="rounded-xl border border-gray-100 bg-gray-50 p-4 sm:col-span-2">
+                    <p class="text-xs uppercase tracking-wide text-gray-500">
+                        Métodos de pago
+                    </p>
+                    <div
+                        class="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600"
+                        v-if="(summary.metodos || []).length"
+                    >
+                        <div
+                            v-for="m in summary.metodos"
+                            :key="m.metodo"
+                            class="flex flex-col gap-1 rounded-lg border border-gray-200 bg-white/70 p-3"
+                        >
+                            <p class="truncate text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                {{ m.metodo }}
+                            </p>
+                            <p class="text-sm font-semibold text-gray-900 break-words">
+                                {{ formatCurrency(m.total) }}
+                            </p>
+                            <p class="text-[11px] text-gray-500 break-words">
+                                {{ m.transacciones ?? 0 }} transacciones
+                            </p>
+                        </div>
                     </div>
+                    <p v-else class="mt-2 text-xs text-gray-500">
+                        Sin detalle de métodos de pago.
+                    </p>
                 </div>
 
                 <!-- Saldo inicial (opcional si a veces viene) -->

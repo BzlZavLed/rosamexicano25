@@ -39,12 +39,10 @@ function lightenHex(hex: string, amount = 0.5) {
     const lerp = (channel: number) => Math.round(channel + (255 - channel) * amount);
     return `#${[lerp(r), lerp(g), lerp(b)].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
 }
-function truncate(text: string | null | undefined, max = 20): string {
-    if (!text) return '';
-    if (text.length <= max) return text;
-    const cut = text.slice(0, max);
-    const cleaned = cut.replace(/\s+\S*$/, ''); // drop partial word at end
-    return (cleaned || cut).trimEnd() + '…';
+
+function truncateLabel(value: string, limit = 24) {
+    if (!value) return '';
+    return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 const chartBars = computed(() => {
     const max = maxCantidad.value || 1;
@@ -72,6 +70,7 @@ const legendItems = computed(() =>
     chartBars.value.map((bar) => ({
         id: bar.id,
         label: bar.label,
+        displayLabel: truncateLabel(bar.label),
         proveedor: bar.proveedor,
         color: bar.color,
         cantidad: bar.cantidad,
@@ -193,7 +192,7 @@ onMounted(loadTopProducts);
                                 class="inline-flex h-2 w-2 rounded-full"
                                 :style="{ backgroundColor: item.color }"
                             ></span>
-                            <p class="truncate font-medium text-gray-800 max-w-[140px]"> {{ truncate(item.label, 15) }}</p>
+                            <p class="truncate font-medium text-gray-800 max-w-[140px]">{{ item.displayLabel }}</p>
                         </div>
                         <div class="flex flex-col text-[11px] text-gray-500 text-right">
                             <span class="truncate">{{ item.proveedor }}</span>

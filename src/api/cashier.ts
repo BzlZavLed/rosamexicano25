@@ -43,6 +43,8 @@ export type CheckoutPayload = {
     discount_percent?: number;
     payment: { method: CashMethod; received?: number };
     ie?: number;
+    provider_surcharge?: Array<{ proveedor_id: number; amount: number; nombre?: string; percent?: number }>;
+    provider_net_totals?: Array<{ proveedor_id: number; total: number; nombre?: string }>;
 };
 
 export async function checkout(payload: CheckoutPayload) {

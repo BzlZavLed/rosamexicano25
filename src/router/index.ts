@@ -14,6 +14,7 @@ const AdminCajaView = () => import("../views/AdminCajaView.vue");
 const AdminEmailHistory = () => import("../views/AdminEmailHistory.vue");
 const AdminClientes = () => import("../views/AdminClientes.vue");
 const AdminCobros = () => import("../views/AdminCobros.vue");
+const AdminReportsView = () => import("../views/AdminReportsView.vue");
 
 const routes: RouteRecordRaw[] = [
     { path: "/", redirect: "/auth" },
@@ -98,6 +99,12 @@ const routes: RouteRecordRaw[] = [
         path: '/admin/cobros',
         name: 'admin-cobros',
         component: AdminCobros,
+        meta: { requiresAuth: true, role: 'admin' }
+    },
+    {
+        path: '/admin/reportes',
+        name: 'admin-reports',
+        component: AdminReportsView,
         meta: { requiresAuth: true, role: 'admin' }
     }
 ];
