@@ -1,4 +1,5 @@
 import http from '../api/http';
+import type { AxiosResponse } from 'axios';
 
 export type Producto = {
     id: number;
@@ -9,14 +10,27 @@ export type Producto = {
     proveedor?: Proveedor;
     proveedorid: number;
     fecha?: string;              // 'YYYY-MM-DD'
+    existencia?: number | null;
 };
 
 export type Proveedor = { ident: number; nombre: string };
 
-export async function listProductos(params?: { search?: string; page?: number; per_page?: number }) {
+export type ListProductosParams = {
+    search?: string;
+    page?: number;
+    per_page?: number;
+    has_inventory?: 'with' | 'without';
+    sort?: 'nombre' | 'proveedor' | 'existencia' | 'importe';
+    direction?: 'asc' | 'desc';
+};
+
+export async function listProductos(params?: ListProductosParams) {
     const { data } = await http.get('/productos', { params });
-    console.log('listProductos response data:', data);
     return data;
+}
+
+export async function exportProductos(params?: ListProductosParams): Promise<AxiosResponse<Blob>> {
+    return http.get('/productos/export', { params, responseType: 'blob' });
 }
 
 export async function getProducto(id: number) {

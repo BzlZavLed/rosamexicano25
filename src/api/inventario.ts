@@ -6,5 +6,5 @@ export type InventarioUpsertPayload =
 
 export async function setStockAbsolute(payload: InventarioUpsertPayload) {
     const { data } = await http.post('/inventario/set-stock', payload);
-    return data; // your InventarioResource (or flat row) from backend
+    return data; 
 }

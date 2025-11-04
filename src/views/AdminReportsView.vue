@@ -5,6 +5,8 @@ import {
     getProductosReport,
     getInventarioReport,
     getCajaReport,
+    getEntradasReport,
+    getCajaProveedoresReport,
     type CajaReportResponse,
     type CajaReportVenta,
     type ProductosReportResponse,
@@ -12,6 +14,10 @@ import {
     type ProductosPagination,
     type InventarioReportResponse,
     type InventarioRow,
+    type EntradasReportResponse,
+    type EntradaRow,
+    type CajaProveedoresResponse,
+    type CajaProveedorGroup,
 } from '../api/reports';
 
 function formatCurrency(value: number | string | null | undefined): string {
@@ -25,18 +31,14 @@ type ReportType =
     | 'productos'
     | 'inventario'
     | 'entradas'
-    | 'caja-condensado'
-    | 'cobros-marcas'
-    | 'productos-marcas';
+    | 'caja-condensado';
 
 const options: Array<{ value: ReportType; label: string }> = [
     { value: 'caja', label: 'Caja' },
     { value: 'productos', label: 'Productos' },
     { value: 'inventario', label: 'Inventario' },
     { value: 'entradas', label: 'Entradas' },
-    { value: 'caja-condensado', label: 'Caja condensado' },
-    { value: 'cobros-marcas', label: 'Cobros de marcas' },
-    { value: 'productos-marcas', label: 'Productos por marcas' },
+    { value: 'caja-condensado', label: 'Caja condensado' }
 ];
 
 type InventarioSort = 'producto' | 'existencia' | 'proveedor';
@@ -63,6 +65,16 @@ const cajaData = ref<CajaReportResponse | null>(null);
 const cajaSearch = ref('');
 const cajaDisplayLimit = ref(200);
 
+const entradasLoading = ref(false);
+const entradasError = ref('');
+const entradasData = ref<EntradasReportResponse | null>(null);
+
+const cajaCondensadoLoading = ref(false);
+const cajaCondensadoError = ref('');
+const cajaCondensadoData = ref<CajaProveedoresResponse | null>(null);
+const expandedProveedores = ref<Set<number>>(new Set());
+
+
 const reportHeader = computed(() => {
     switch (selected.value) {
         case 'caja':
@@ -75,10 +87,6 @@ const reportHeader = computed(() => {
             return 'Reporte de entradas';
         case 'caja-condensado':
             return 'Reporte de caja condensado';
-        case 'cobros-marcas':
-            return 'Reporte de cobros por marca';
-        case 'productos-marcas':
-            return 'Reporte de productos por marca';
         default:
             return 'Reporte';
     }
@@ -93,6 +101,35 @@ const tableClasses = {
     emptyRow: 'px-3 py-6 text-center text-gray-500',
 } as const;
 
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
+function normalizeDateParam(value: string | null | undefined): string {
+    const fallback = todayIso();
+    if (!value) return fallback;
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        const [y, m, d] = trimmed.split('-');
+        if (y && m && d) {
+            return `${d}/${m}/${y.slice(-2)}`;
+        }
+        return fallback;
+    }
+    if (/^\d{2}\/\d{2}\/\d{2,4}$/.test(trimmed)) {
+        const parts = trimmed.split('/');
+        if (parts[2] && parts[2].length === 2) return trimmed;
+        return `${parts[0]}/${parts[1]}/${parts[2] ? parts[2].slice(-2) : ''}`;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+        const day = String(parsed.getDate()).padStart(2, '0');
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const year = String(parsed.getFullYear()).slice(-2);
+        return `${day}/${month}/${year}`;
+    }
+    return fallback;
+}
+
 async function fetchCajaReport(download = false) {
     if (selected.value !== 'caja') return;
     cajaError.value = '';
@@ -102,8 +139,8 @@ async function fetchCajaReport(download = false) {
         return;
     }
 
-    const from = rangeStart.value;
-    const to = rangeEnd.value || rangeStart.value;
+    const from = normalizeDateParam(rangeStart.value);
+    const to = rangeEnd.value ? normalizeDateParam(rangeEnd.value) : from;
 
     cajaLoading.value = true;
     try {
@@ -124,7 +161,6 @@ async function fetchCajaReport(download = false) {
             }
         } else {
             const data = await getCajaReport({ from_date: from, to_date: to });
-            console.log(data);
             if (data instanceof Blob) {
                 cajaError.value = 'La respuesta del reporte no es válida.';
                 cajaData.value = null;
@@ -140,6 +176,100 @@ async function fetchCajaReport(download = false) {
     } finally {
         cajaLoading.value = false;
     }
+}
+
+async function fetchEntradasReport() {
+    if (selected.value !== 'entradas') return;
+    entradasError.value = '';
+
+    if (!rangeStart.value) {
+        entradasError.value = 'Selecciona la fecha inicial.';
+        return;
+    }
+
+    const from = normalizeDateParam(rangeStart.value);
+    const to = rangeEnd.value ? normalizeDateParam(rangeEnd.value) : from;
+
+    entradasLoading.value = true;
+    try {
+        const data = await getEntradasReport({ from_date: from, to_date: to });
+        entradasData.value = data;
+    } catch (err: any) {
+        entradasError.value = err?.response?.data?.message || err?.message || 'No se pudo cargar el reporte de entradas.';
+        entradasData.value = null;
+    } finally {
+        entradasLoading.value = false;
+    }
+}
+
+async function fetchCajaCondensadoReport() {
+    if (selected.value !== 'caja-condensado') return;
+    cajaCondensadoError.value = '';
+
+    if (!rangeStart.value) {
+        cajaCondensadoError.value = 'Selecciona la fecha inicial.';
+        return;
+    }
+
+    const from = normalizeDateParam(rangeStart.value);
+    const to = rangeEnd.value ? normalizeDateParam(rangeEnd.value) : undefined;
+
+    cajaCondensadoLoading.value = true;
+    try {
+        const response = await getCajaProveedoresReport({ from_date: from, to_date: to });
+        if (response instanceof Blob) {
+            cajaCondensadoError.value = 'La respuesta del reporte no es válida.';
+            cajaCondensadoData.value = null;
+        } else {
+            cajaCondensadoData.value = response as CajaProveedoresResponse;
+            expandedProveedores.value = new Set();
+        }
+    } catch (err: any) {
+        cajaCondensadoError.value =
+            err?.response?.data?.message || err?.message || 'No se pudo cargar el reporte condensado.';
+        cajaCondensadoData.value = null;
+    } finally {
+        cajaCondensadoLoading.value = false;
+    }
+}
+
+async function downloadCajaCondensado() {
+    if (selected.value !== 'caja-condensado') return;
+    cajaCondensadoError.value = '';
+
+    if (!rangeStart.value) {
+        cajaCondensadoError.value = 'Selecciona la fecha inicial.';
+        return;
+    }
+
+    const from = normalizeDateParam(rangeStart.value);
+    const to = rangeEnd.value ? normalizeDateParam(rangeEnd.value) : undefined;
+
+    try {
+        const blob = await getCajaProveedoresReport({ from_date: from, to_date: to, download: true });
+        if (!(blob instanceof Blob)) {
+            cajaCondensadoError.value = 'La respuesta del reporte no es válida para descarga.';
+            return;
+        }
+        const filename = `reporte-caja-condensado-${from}--${to ?? from}.csv`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    } catch (err: any) {
+        cajaCondensadoError.value = err?.response?.data?.message || err?.message || 'No se pudo descargar el reporte.';
+    }
+}
+
+function toggleProveedor(proveedorId: number) {
+    const current = new Set(expandedProveedores.value);
+    if (current.has(proveedorId)) current.delete(proveedorId);
+    else current.add(proveedorId);
+    expandedProveedores.value = current;
 }
 
 type CajaFlatRow = {
@@ -256,6 +386,52 @@ const cajaFlatRows = computed<CajaFlatRow[]>(() => {
     });
     return rows;
 });
+
+const entradasSummary = computed(() => {
+    if (!entradasData.value) return null;
+    const rows = entradasData.value.entradas ?? [];
+    const totalMovimientos = rows.length;
+    const totalUnidades = rows.reduce((acc, row) => acc + Number(row.ingreal ?? 0), 0);
+    return {
+        totalMovimientos,
+        totalUnidades,
+    };
+});
+
+const cajaCondensadoResumen = computed(() => {
+    if (!cajaCondensadoData.value) return null;
+    const res = cajaCondensadoData.value.resumen;
+    return {
+        ventasBrutas: Number(res.ventas_brutas ?? 0),
+        descuentos: Number(res.descuentos ?? 0),
+        cargosTarjeta: Number(res.cargos_tarjeta ?? 0),
+        descuentoGeneral: Number(res.descuento_general ?? 0),
+        ganancias: Number(res.ganancias ?? 0),
+        totalProveedores: cajaCondensadoData.value.proveedores?.length ?? 0,
+    };
+});
+
+function providerItemTotals(proveedor: CajaProveedorGroup) {
+    return proveedor.items.reduce(
+        (acc, item) => {
+            acc.cantidad += Number(item.cantidad ?? 0);
+            acc.total += Number(item.total ?? 0);
+            acc.descProducto += Number(item.descuento_producto ?? 0);
+            acc.cargoTarjeta += Number(item.cargo_tarjeta ?? 0);
+            acc.descTotal += Number(item.descuento_total ?? 0);
+            acc.ganancia += Number(item.ganancia ?? 0);
+            return acc;
+        },
+        {
+            cantidad: 0,
+            total: 0,
+            descProducto: 0,
+            cargoTarjeta: 0,
+            descTotal: 0,
+            ganancia: 0,
+        }
+    );
+}
 
 const filteredCajaRows = computed(() => {
     const search = cajaSearch.value.trim().toLowerCase();
@@ -453,6 +629,18 @@ watch(
         if (val === 'inventario' && inventarioItems.value.length === 0 && !inventarioLoading.value) {
             loadInventario();
         }
+        if (val === 'entradas') {
+            entradasError.value = '';
+            if (!entradasData.value && rangeStart.value) {
+                fetchEntradasReport();
+            }
+        }
+        if (val === 'caja-condensado') {
+            cajaCondensadoError.value = '';
+            if (!cajaCondensadoData.value && rangeStart.value) {
+                fetchCajaCondensadoReport();
+            }
+        }
     },
     { immediate: false }
 );
@@ -473,6 +661,21 @@ watch(
     () => {
         inventarioPage.value = 1;
         if (selected.value === 'inventario') loadInventario();
+    }
+);
+
+watch(
+    () => [rangeStart.value, rangeEnd.value],
+    () => {
+        if (selected.value === 'entradas') {
+            entradasData.value = null;
+            entradasError.value = '';
+        }
+        if (selected.value === 'caja-condensado') {
+            cajaCondensadoData.value = null;
+            cajaCondensadoError.value = '';
+            expandedProveedores.value = new Set();
+        }
     }
 );
 
@@ -504,12 +707,12 @@ watch(
                             </option>
                         </select>
                     </label>
-                    <label class="flex flex-col text-sm text-gray-600" v-if="selected !== 'productos'">
+                    <label class="flex flex-col text-sm text-gray-600" v-if="['caja', 'entradas','caja-condensado'].includes(selected)">
                         <span class="font-medium text-gray-700">Fecha inicial</span>
                         <input v-model="rangeStart" type="date"
                             class="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:ring-gray-900" />
                     </label>
-                    <label class="flex flex-col text-sm text-gray-600" v-if="selected !== 'productos'">
+                    <label class="flex flex-col text-sm text-gray-600" v-if="['caja', 'entradas','caja-condensado'].includes(selected)">
                         <span class="font-medium text-gray-700">Fecha final <span
                                 class="text-xs text-gray-400">(opcional)</span></span>
                         <input v-model="rangeEnd" type="date"
@@ -805,6 +1008,371 @@ watch(
                         </div>
                     </template>
 
+                    <template v-else-if="selected === 'caja-condensado'">
+                        <div class="space-y-4">
+                            <p class="font-medium text-gray-900">{{ reportHeader }}</p>
+
+                            <div class="flex flex-wrap items-center gap-2 text-sm">
+                                <button type="button"
+                                    class="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                                    :disabled="cajaCondensadoLoading" @click="fetchCajaCondensadoReport">
+                                    <span v-if="cajaCondensadoLoading">Consultando…</span>
+                                    <span v-else>Consultar resumen</span>
+                                </button>
+                                <button type="button"
+                                    class="inline-flex items-center justify-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                                    :disabled="cajaCondensadoLoading" @click="downloadCajaCondensado">
+                                    Descargar CSV
+                                </button>
+                                <span class="text-xs text-gray-500">Resumen por proveedor de ventas en el periodo seleccionado.</span>
+                            </div>
+
+                            <div v-if="cajaCondensadoError"
+                                class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                                {{ cajaCondensadoError }}
+                            </div>
+
+                            <div v-else>
+                                <div v-if="cajaCondensadoLoading" class="text-xs text-gray-500">Cargando datos…</div>
+                                <div v-else-if="cajaCondensadoData" class="space-y-4">
+                                    <div class="flex flex-wrap items-start justify-between gap-3 text-xs text-gray-500">
+                                        <div class="space-x-1">
+                                            <span>Periodo:</span>
+                                            <span class="font-semibold text-gray-900">{{ cajaCondensadoData.from_date }}</span>
+                                            <span>–</span>
+                                            <span class="font-semibold text-gray-900">{{ cajaCondensadoData.to_date }}</span>
+                                        </div>
+                                        <div v-if="cajaCondensadoResumen" class="flex flex-wrap gap-4 text-[11px] text-gray-500">
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ formatCurrency(cajaCondensadoResumen.ventasBrutas) }}</span>
+                                                <span>Ventas brutas</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ formatCurrency(cajaCondensadoResumen.descuentos) }}</span>
+                                                <span>Descuentos</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ formatCurrency(cajaCondensadoResumen.cargosTarjeta) }}</span>
+                                                <span>Cargos tarjeta</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ formatCurrency(cajaCondensadoResumen.descuentoGeneral) }}</span>
+                                                <span>Desc. general</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ formatCurrency(cajaCondensadoResumen.ganancias) }}</span>
+                                                <span>Ganancias</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ cajaCondensadoResumen.totalProveedores }}</span>
+                                                <span>Proveedores</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div :class="tableClasses.wrapper" class="hidden md:block">
+                                        <table :class="tableClasses.table">
+                                            <thead :class="tableClasses.head">
+                                                <tr>
+                                                    <th class="px-3 py-2"></th>
+                                                    <th class="px-3 py-2">Proveedor</th>
+                                                    <th class="px-3 py-2">Ident</th>
+                                                    <th class="px-3 py-2 text-right">Ventas brutas</th>
+                                                    <th class="px-3 py-2 text-right">Descuentos</th>
+                                                    <th class="px-3 py-2 text-right">Cargos tarjeta</th>
+                                                    <th class="px-3 py-2 text-right">Ganancia</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody :class="tableClasses.body">
+                                                <template v-for="proveedor in cajaCondensadoData.proveedores" :key="proveedor.proveedor_id">
+                                                    <tr :class="tableClasses.row">
+                                                        <td class="px-3 py-2">
+                                                            <button type="button"
+                                                                class="inline-flex h-5 w-5 items-center justify-center rounded border border-gray-300 text-xs hover:bg-gray-50"
+                                                                @click="toggleProveedor(proveedor.proveedor_id)">
+                                                                {{ expandedProveedores.has(proveedor.proveedor_id) ? '-' : '+' }}
+                                                            </button>
+                                                        </td>
+                                                        <td class="px-3 py-2 font-semibold text-gray-900">{{ proveedor.proveedor_nombre }}</td>
+                                                        <td class="px-3 py-2">{{ proveedor.proveedor_ident }}</td>
+                                                        <td class="px-3 py-2 text-right">{{ formatCurrency(proveedor.ventas_brutas) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(proveedor.descuentos) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(proveedor.cargos_tarjeta) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(proveedor.ganancia_total) }}</td>
+                                                </tr>
+                                                <tr v-if="expandedProveedores.has(proveedor.proveedor_id) && proveedor.items.length > 0" class="bg-gray-50">
+                                                    <td class="px-3 py-0.5"></td>
+                                                    <td class="px-3 py-0.5 text-[10px] text-gray-500" colspan="6">
+                                                        * <span class="text-rose-600">Desc. total</span> = Desc. producto + Cargo tarjeta
+                                                    </td>
+                                                </tr>
+                                                    <tr v-if="expandedProveedores.has(proveedor.proveedor_id)" class="bg-gray-50 text-[11px] text-gray-600">
+                                                        <td class="px-3 py-2"></td>
+                                                        <td class="px-3 py-2" colspan="6">
+                                                            <div :class="tableClasses.wrapper">
+                                                                <table :class="tableClasses.table">
+                                                                    <thead :class="tableClasses.head">
+                                                                        <tr>
+                                                                            <th class="px-3 py-2">Fecha</th>
+                                                                            <th class="px-3 py-2">Producto</th>
+                                                                            <th class="px-3 py-2">Ident</th>
+                                                                            <th class="px-3 py-2 text-right">Cantidad</th>
+                                                                            <th class="px-3 py-2 text-right">Precio unitario</th>
+                                                                            <th class="px-3 py-2 text-right">Total</th>
+                                                                            <th class="px-3 py-2 text-right">Desc. producto</th>
+                                                                            <th class="px-3 py-2 text-right">Cargo tarjeta</th>
+                                                                            <th class="px-3 py-2 text-right">Desc. total</th>
+                                                                            <th class="px-3 py-2 text-right">Ganancia</th>
+                                                                            <th class="px-3 py-2">Método</th>
+                                                                            <th class="px-3 py-2">Vendedor</th>
+                                                                            <th class="px-3 py-2">Promoción</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody :class="tableClasses.body">
+                                                                        <tr v-for="item in proveedor.items" :key="item.ventadesg_id">
+                                                                            <td class="px-3 py-2">{{ item.fecha }}</td>
+                                                                            <td class="px-3 py-2">{{ item.producto_nombre }}</td>
+                                                                            <td class="px-3 py-2">{{ item.producto_ident }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ item.cantidad }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(item.precio_unitario) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(item.total) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(item.descuento_producto) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(item.cargo_tarjeta) }}</td>
+                                                                            <td class="px-3 py-2 text-right">
+                                                                                <div class="font-semibold text-rose-600">{{ formatCurrency(item.descuento_total) }}</div>
+                                                                                <div class="text-[10px] text-gray-500">
+                                                                                    {{ formatCurrency(item.descuento_producto) }} + {{ formatCurrency(item.cargo_tarjeta) }}
+                                                                                </div>
+                                                                            </td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(item.ganancia) }}</td>
+                                                                            <td class="px-3 py-2 capitalize">{{ item.metodo }}</td>
+                                                                            <td class="px-3 py-2">{{ item.vendedor }}</td>
+                                                                            <td class="px-3 py-2">{{ item.promotion || '—' }}</td>
+                                                                        </tr>
+                                                                        <tr v-if="proveedor.items.length === 0">
+                                                                            <td colspan="13" :class="tableClasses.emptyRow">
+                                                                                Sin detalles de ventas para este proveedor.
+                                                                            </td>
+                                                                        </tr>
+                                                                    </tbody>
+                                                                    <tfoot v-if="proveedor.items.length > 0" class="bg-gray-100 text-[11px] uppercase tracking-wide text-gray-600">
+                                                                        <tr>
+                                                                            <td class="px-3 py-2" colspan="3">Totales</td>
+                                                                            <td class="px-3 py-2 text-right">{{ providerItemTotals(proveedor).cantidad }}</td>
+                                                                            <td class="px-3 py-2"></td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(providerItemTotals(proveedor).total) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(providerItemTotals(proveedor).descProducto) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(providerItemTotals(proveedor).cargoTarjeta) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(providerItemTotals(proveedor).descTotal) }}</td>
+                                                                            <td class="px-3 py-2 text-right">{{ formatCurrency(providerItemTotals(proveedor).ganancia) }}</td>
+                                                                            <td class="px-3 py-2" colspan="3"></td>
+                                                                        </tr>
+                                                                    </tfoot>
+                                                                </table>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                                <tr v-if="(cajaCondensadoData.proveedores?.length ?? 0) === 0">
+                                                    <td colspan="7" :class="tableClasses.emptyRow">
+                                                        No se encontraron proveedores en el periodo seleccionado.
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                            <tfoot v-if="cajaCondensadoResumen" class="bg-gray-100 text-[11px] uppercase tracking-wide text-gray-600">
+                                                <tr>
+                                                    <td class="px-3 py-2" colspan="3">Totales</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(cajaCondensadoResumen.ventasBrutas) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(cajaCondensadoResumen.descuentos) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(cajaCondensadoResumen.cargosTarjeta) }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ formatCurrency(cajaCondensadoResumen.ganancias) }}</td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                    <div class="space-y-3 md:hidden">
+                                        <article v-for="proveedor in cajaCondensadoData.proveedores" :key="proveedor.proveedor_id"
+                                            class="space-y-3 rounded-xl border border-gray-200 bg-white p-4 text-sm shadow-sm">
+                                            <div class="flex items-start justify-between gap-2">
+                                                <div>
+                                                    <h3 class="text-base font-semibold text-gray-900">{{ proveedor.proveedor_nombre }}</h3>
+                                                    <p class="text-xs text-gray-500">Ident {{ proveedor.proveedor_ident }}</p>
+                                                </div>
+                                                <button type="button"
+                                                    class="inline-flex items-center justify-center rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50"
+                                                    @click="toggleProveedor(proveedor.proveedor_id)">
+                                                    {{ expandedProveedores.has(proveedor.proveedor_id) ? 'Ocultar' : 'Ver detalles' }}
+                                                </button>
+                                            </div>
+                                            <div class="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                                                <div>
+                                                    <span class="block font-semibold text-gray-900">{{ formatCurrency(proveedor.ventas_brutas) }}</span>
+                                                    <span>Ventas brutas</span>
+                                                </div>
+                                                <div>
+                                                    <span class="block font-semibold text-gray-900">{{ formatCurrency(proveedor.descuentos) }}</span>
+                                                    <span>Descuentos</span>
+                                                </div>
+                                                <div>
+                                                    <span class="block font-semibold text-gray-900">{{ formatCurrency(proveedor.cargos_tarjeta) }}</span>
+                                                    <span>Cargos tarjeta</span>
+                                                </div>
+                                                <div>
+                                                    <span class="block font-semibold text-gray-900">{{ formatCurrency(proveedor.ganancia_total) }}</span>
+                                                    <span>Ganancia</span>
+                                                </div>
+                                            </div>
+                                            <div v-if="expandedProveedores.has(proveedor.proveedor_id)" class="space-y-2">
+                                                <p class="text-[10px] text-gray-500">
+                                                    * <span class="text-rose-600 font-semibold">Desc. total</span> = Desc. producto + Cargo tarjeta
+                                                </p>
+                                                <div class="space-y-2">
+                                                    <article v-for="item in proveedor.items" :key="item.ventadesg_id"
+                                                        class="rounded-lg border border-gray-200 bg-gray-50 p-3 text-[11px] text-gray-600">
+                                                        <div class="flex items-center justify-between">
+                                                            <span class="font-semibold text-gray-900">{{ item.producto_nombre }}</span>
+                                                            <span>{{ item.fecha }}</span>
+                                                        </div>
+                                                        <div class="mt-2 grid gap-1">
+                                                            <div><span class="font-medium text-gray-700">Ident:</span> {{ item.producto_ident }}</div>
+                                                            <div class="flex justify-between">
+                                                                <span><span class="font-medium text-gray-700">Cantidad:</span> {{ item.cantidad }}</span>
+                                                                <span><span class="font-medium text-gray-700">Total:</span> {{ formatCurrency(item.total) }}</span>
+                                                            </div>
+                                                            <div class="flex justify-between">
+                                                                <span><span class="font-medium text-gray-700">Desc. prod:</span> {{ formatCurrency(item.descuento_producto) }}</span>
+                                                                <span><span class="font-medium text-gray-700">Cargo tarjeta:</span> {{ formatCurrency(item.cargo_tarjeta) }}</span>
+                                                            </div>
+                                                            <div>
+                                                                <span class="font-medium text-gray-700">Desc. total:</span>
+                                                                <span class="font-semibold text-rose-600">{{ formatCurrency(item.descuento_total) }}</span>
+                                                                <span class="text-[10px] text-gray-500 ml-1">({{ formatCurrency(item.descuento_producto) }} + {{ formatCurrency(item.cargo_tarjeta) }})</span>
+                                                            </div>
+                                                            <div class="flex justify-between">
+                                                                <span><span class="font-medium text-gray-700">Ganancia:</span> {{ formatCurrency(item.ganancia) }}</span>
+                                                                <span><span class="font-medium text-gray-700">Método:</span> {{ item.metodo }}</span>
+                                                            </div>
+                                                            <div class="flex justify-between">
+                                                                <span><span class="font-medium text-gray-700">Vendedor:</span> {{ item.vendedor }}</span>
+                                                                <span><span class="font-medium text-gray-700">Promoción:</span> {{ item.promotion || '—' }}</span>
+                                                            </div>
+                                                        </div>
+                                                    </article>
+                                                    <div v-if="proveedor.items.length === 0"
+                                                        class="rounded-lg border border-dashed border-gray-200 bg-white px-3 py-4 text-center text-xs text-gray-500">
+                                                        Sin detalles de ventas para este proveedor.
+                                                    </div>
+                                                </div>
+                                                <div v-if="proveedor.items.length > 0"
+                                                    class="rounded-lg border border-gray-200 bg-white p-3 text-[11px] text-gray-600">
+                                                    <div class="flex justify-between">
+                                                        <span class="font-semibold text-gray-900">Totales</span>
+                                                        <span>{{ providerItemTotals(proveedor).cantidad }} uds</span>
+                                                    </div>
+                                                    <div class="mt-2 grid grid-cols-2 gap-1">
+                                                        <div>Ventas: {{ formatCurrency(providerItemTotals(proveedor).total) }}</div>
+                                                        <div>Desc. prod: {{ formatCurrency(providerItemTotals(proveedor).descProducto) }}</div>
+                                                        <div>Tarjeta: {{ formatCurrency(providerItemTotals(proveedor).cargoTarjeta) }}</div>
+                                                        <div>Desc. total: {{ formatCurrency(providerItemTotals(proveedor).descTotal) }}</div>
+                                                        <div>Ganancia: {{ formatCurrency(providerItemTotals(proveedor).ganancia) }}</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </article>
+                                        <div v-if="(cajaCondensadoData.proveedores?.length ?? 0) === 0"
+                                            class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-center text-xs text-gray-500">
+                                            No se encontraron proveedores en el periodo seleccionado.
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="text-xs text-gray-500">
+                                    Selecciona un rango de fechas y presiona «Consultar resumen».
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template v-else-if="selected === 'entradas'">
+                        <div class="space-y-4">
+                            <p class="font-medium text-gray-900">{{ reportHeader }}</p>
+
+                            <div class="flex flex-wrap items-center gap-2 text-sm">
+                                <button type="button"
+                                    class="inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                                    :disabled="entradasLoading" @click="fetchEntradasReport">
+                                    <span v-if="entradasLoading">Consultando…</span>
+                                    <span v-else>Consultar entradas</span>
+                                </button>
+                                <span class="text-xs text-gray-500">Utiliza el rango de fechas para obtener los movimientos de entrada.</span>
+                            </div>
+
+                            <div v-if="entradasError"
+                                class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                                {{ entradasError }}
+                            </div>
+
+                            <div v-else>
+                                <div v-if="entradasLoading" class="text-xs text-gray-500">Cargando datos…</div>
+                                <div v-else-if="entradasData" class="space-y-4">
+                                    <div class="flex flex-wrap items-start justify-between gap-3 text-xs text-gray-500">
+                                        <div class="space-x-1">
+                                            <span>Periodo:</span>
+                                            <span class="font-semibold text-gray-900">{{ entradasData.from_date }}</span>
+                                            <span>–</span>
+                                            <span class="font-semibold text-gray-900">{{ entradasData.to_date }}</span>
+                                        </div>
+                                        <div v-if="entradasSummary" class="flex flex-wrap gap-4 text-[11px] text-gray-500">
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ entradasSummary.totalMovimientos }}</span>
+                                                <span>Movimientos</span>
+                                            </div>
+                                            <div>
+                                                <span class="block font-semibold text-gray-900">{{ entradasSummary.totalUnidades }}</span>
+                                                <span>Unidades</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div :class="tableClasses.wrapper">
+                                        <table :class="tableClasses.table">
+                                            <thead :class="tableClasses.head">
+                                                <tr>
+                                                    <th class="px-3 py-2">Fecha</th>
+                                                    <th class="px-3 py-2">Producto</th>
+                                                    <th class="px-3 py-2">Ident</th>
+                                                    <th class="px-3 py-2 text-right">Cantidad</th>
+                                                    <th class="px-3 py-2">Proveedor</th>
+                                                    <th class="px-3 py-2">Acción</th>
+                                                    <th class="px-3 py-2">Usuario</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody :class="tableClasses.body">
+                                                <tr v-for="(row, idx) in entradasData.entradas" :key="`${row.prodid}-${row.fecha_iso}-${idx}`"
+                                                    :class="tableClasses.row">
+                                                    <td class="px-3 py-2">{{ row.fecha }}</td>
+                                                    <td class="px-3 py-2">{{ row.prodnombre }}</td>
+                                                    <td class="px-3 py-2">{{ row.prodid }}</td>
+                                                    <td class="px-3 py-2 text-right">{{ row.ingreal }}</td>
+                                                    <td class="px-3 py-2">{{ row.proveedor_nombre || '—' }}</td>
+                                                    <td class="px-3 py-2 uppercase">{{ row.accion }}</td>
+                                                    <td class="px-3 py-2">{{ row.usuario || '—' }}</td>
+                                                </tr>
+                                                <tr v-if="entradasData.entradas.length === 0">
+                                                    <td colspan="7" :class="tableClasses.emptyRow">
+                                                        No se registraron entradas en el periodo seleccionado.
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div v-else class="text-xs text-gray-500">
+                                    Selecciona un rango de fechas y presiona «Consultar entradas».
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
 
                     <template v-else-if="selected === 'inventario'">
                         <div class="space-y-4">
@@ -954,26 +1522,6 @@ watch(
                                 </div>
                             </div>
                         </div>
-                    </template>
-                    <template v-else-if="selected === 'entradas'">
-                        <p class="font-medium text-gray-900">{{ reportHeader }}</p>
-                        <p class="mt-2 text-xs text-gray-500">Próximamente mostraremos la configuración de este reporte.
-                        </p>
-                    </template>
-                    <template v-else-if="selected === 'caja-condensado'">
-                        <p class="font-medium text-gray-900">{{ reportHeader }}</p>
-                        <p class="mt-2 text-xs text-gray-500">Próximamente mostraremos la configuración de este reporte.
-                        </p>
-                    </template>
-                    <template v-else-if="selected === 'cobros-marcas'">
-                        <p class="font-medium text-gray-900">{{ reportHeader }}</p>
-                        <p class="mt-2 text-xs text-gray-500">Próximamente mostraremos la configuración de este reporte.
-                        </p>
-                    </template>
-                    <template v-else-if="selected === 'productos-marcas'">
-                        <p class="font-medium text-gray-900">{{ reportHeader }}</p>
-                        <p class="mt-2 text-xs text-gray-500">Próximamente mostraremos la configuración de este reporte.
-                        </p>
                     </template>
                 </div>
             </section>

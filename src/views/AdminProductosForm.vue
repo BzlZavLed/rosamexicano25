@@ -2,8 +2,17 @@
 import { ref, reactive, watch, onMounted, computed } from 'vue';
 import AppLayout from '../components/layout/AppLayout.vue';
 import {
-    listProductos, createProducto, updateProducto, deleteProducto,
-    listProveedores, setStock, bulkUploadCSV, type Producto, type Proveedor
+    listProductos,
+    exportProductos,
+    createProducto,
+    updateProducto,
+    deleteProducto,
+    listProveedores,
+    setStock,
+    bulkUploadCSV,
+    type Producto,
+    type Proveedor,
+    type ListProductosParams,
 } from '../api/products';
 import http from '../api/http';
 
@@ -150,6 +159,23 @@ const message = ref('');
 const error = ref('');
 
 const q = ref('');
+const existenciaFilter = ref<'all' | 'with' | 'without'>('all');
+const existenciaOptions = [
+    { value: 'all', label: 'Todas las existencias' },
+    { value: 'with', label: 'Con existencia' },
+    { value: 'without', label: 'Sin existencia' },
+] as const;
+const sortField = ref<'nombre' | 'proveedor' | 'existencia'>('nombre');
+const sortOptions = [
+    { value: 'nombre', label: 'Nombre' },
+    { value: 'proveedor', label: 'Proveedor' },
+    { value: 'existencia', label: 'Existencia' },
+] as const;
+const sortDirection = ref<'asc' | 'desc'>('asc');
+const directionOptions = [
+    { value: 'asc', label: 'Ascendente' },
+    { value: 'desc', label: 'Descendente' },
+] as const;
 const productos = ref<Producto[]>([]);
 const selectedId = ref<number | null>(null);
 const proveedores = ref<Proveedor[]>([]);
@@ -216,17 +242,26 @@ function resetForm() {
     message.value = '';
     error.value = '';
 }
+
+function buildListParams(overrides: Partial<ListProductosParams> = {}): ListProductosParams {
+    const params: ListProductosParams = {
+        page: pagination.page,
+        per_page: pagination.perPage,
+        ...overrides,
+    };
+    if (q.value) params.search = q.value;
+    if (existenciaFilter.value !== 'all') params.has_inventory = existenciaFilter.value;
+    if (sortField.value) params.sort = sortField.value;
+    if (sortDirection.value) params.direction = sortDirection.value;
+    return params;
+}
+
 async function loadList() {
     loading.value = true;
     error.value = '';
     try {
-        const params: Record<string, any> = {
-            page: pagination.page,
-            per_page: pagination.perPage
-        };
-        if (q.value) params.search = q.value;
+        const params = buildListParams();
         const resp = await listProductos(params);
-        console.log('listProductos resp:', resp);
         const rows = Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
         productos.value = rows;
 
@@ -334,6 +369,7 @@ async function remove() {
 /* ---------- CSV Upload ---------- */
 const csvFile = ref<File | null>(null);
 const downloadingTemplate = ref(false);
+const downloadingCSV = ref(false);
 async function uploadCSV() {
     if (!csvFile.value) return;
     saving.value = true; error.value = ''; message.value = '';
@@ -376,6 +412,35 @@ async function downloadTemplate() {
     }
 }
 
+async function downloadProductosCSV() {
+    downloadingCSV.value = true;
+    error.value = '';
+    try {
+        const response = await exportProductos(buildListParams());
+        const contentType = response.headers['content-type'] || 'text/csv';
+        const blob = new Blob([response.data], { type: contentType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const disposition = response.headers['content-disposition'];
+        let filename = 'productos_export.csv';
+        if (typeof disposition === 'string') {
+            const match = disposition.match(/filename="?([^"]+)"?/i);
+            if (match?.[1]) filename = match[1];
+        }
+        link.href = url;
+        link.setAttribute('download', filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        message.value = 'Exportación de productos generada';
+    } catch (e: any) {
+        error.value = e?.response?.data?.message || 'No se pudo exportar los productos.';
+    } finally {
+        downloadingCSV.value = false;
+    }
+}
+
 function goToPage(page: number) {
     const target = Math.max(1, Math.min(page, pagination.lastPage || 1));
     if (target === pagination.page) return;
@@ -393,6 +458,18 @@ function goToNextPage() {
 /* ---------- barcode preview (svg) ---------- */
 
 watch(q, () => {
+    pagination.page = 1;
+    loadList();
+});
+watch(existenciaFilter, () => {
+    pagination.page = 1;
+    loadList();
+});
+watch(sortField, () => {
+    pagination.page = 1;
+    loadList();
+});
+watch(sortDirection, () => {
     pagination.page = 1;
     loadList();
 });
@@ -562,10 +639,52 @@ onMounted(async () => {
 
             <!-- ===== SEARCH / TABLE (moved below the form) ===== -->
             <div class="mt-10 space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Buscar / Consultar</label>
-                    <input v-model="q" type="text" placeholder="Nombre, descripción, código…"
-                        class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
+                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Buscar / Consultar</label>
+                        <input v-model="q" type="text" placeholder="Nombre, descripción, código…"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2" />
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Existencia</label>
+                        <select v-model="existenciaFilter"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
+                            <option v-for="opt in existenciaOptions" :key="opt.value" :value="opt.value">
+                                {{ opt.label }}
+                            </option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Ordenar por</label>
+                        <select v-model="sortField"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
+                            <option v-for="opt in sortOptions" :key="opt.value" :value="opt.value">
+                                {{ opt.label }}
+                            </option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+                        <select v-model="sortDirection"
+                            class="w-full rounded-lg border-gray-300 focus:border-gray-900 focus:ring-gray-900 px-3 py-2">
+                            <option v-for="opt in directionOptions" :key="opt.value" :value="opt.value">
+                                {{ opt.label }}
+                            </option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex justify-end">
+                    <button type="button" @click="downloadProductosCSV"
+                        :disabled="downloadingCSV || loading"
+                        class="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60">
+                        <svg v-if="downloadingCSV" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                            class="h-4 w-4 animate-spin text-gray-500" aria-hidden="true">
+                            <path fill="currentColor"
+                                d="M12 2a1 1 0 0 1 1 1v2.05a1 1 0 0 1-2 0V3a1 1 0 0 1 1-1Zm6.36 3.64a1 1 0 0 1 0 1.41l-1.45 1.45a1 1 0 1 1-1.41-1.41l1.45-1.45a1 1 0 0 1 1.41 0ZM21 11a1 1 0 1 1 0 2h-2.05a1 1 0 0 1 0-2H21ZM8.5 6.09a1 1 0 0 1-1.41 1.41L5.64 6.05A1 1 0 1 1 7.05 4.64L8.5 6.09ZM7 11a1 1 0 0 1 1 1H7Zm1 0a1 1 0 0 1 2 0H8Zm2 0a1 1 0 0 1 2 0h-2Zm2 0a1 1 0 0 1 2 0h-2Zm2 0a1 1 0 0 1 2 0h-2Z" />
+                        </svg>
+                        <span>{{ downloadingCSV ? 'Generando CSV…' : 'Exportar CSV' }}</span>
+                    </button>
                 </div>
 
                 <div class="space-y-3 md:hidden">
@@ -603,8 +722,17 @@ onMounted(async () => {
                                 <p class="font-medium text-gray-900">{{ p.nombre }}</p>
                             </div>
                             <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-600">
-                                <span>Proveedor: <b class="text-gray-800">{{ p.proveedor?.nombre ?? 'Sin asignar' }}</b></span>
+                                <span>
+                                    Proveedor:
+                                    <template v-if="p.proveedor?.nombre">
+                                        <b class="text-gray-800">{{ p.proveedor.nombre }}</b>
+                                    </template>
+                                    <template v-else>
+                                        <b class="text-rose-600">No proveedor definido</b>
+                                    </template>
+                                </span>
                                 <span>Precio: <b class="text-gray-900">{{ displayMoney(p.precio) }}</b></span>
+                                <span>Existencia: <b class="text-gray-900">{{ p.existencia ?? 0 }}</b></span>
                             </div>
                         </article>
                     </template>
@@ -617,6 +745,7 @@ onMounted(async () => {
                                 <th class="text-left font-medium px-3 py-2">Ident</th>
                                 <th class="text-left font-medium px-3 py-2">Nombre</th>
                                 <th class="text-left font-medium px-3 py-2">Proveedor</th>
+                                <th class="text-right font-medium px-3 py-2">Existencia</th>
                                 <th class="text-right font-medium px-3 py-2">Precio</th>
                             </tr>
                         </thead>
@@ -626,14 +755,18 @@ onMounted(async () => {
                                 <td class="px-3 py-2">{{ p.id }}</td>
                                 <td class="px-3 py-2">{{ p.ident }}</td>
                                 <td class="px-3 py-2">{{ p.nombre }}</td>
-                                <td class="px-3 py-2">{{ p.proveedor?.nombre }}</td>
+                                <td class="px-3 py-2">
+                                    <span v-if="p.proveedor?.nombre">{{ p.proveedor.nombre }}</span>
+                                    <span v-else class="text-rose-600 font-medium">No proveedor definido</span>
+                                </td>
+                                <td class="px-3 py-2 text-right">{{ p.existencia ?? 0 }}</td>
                                 <td class="px-3 py-2 text-right">{{ displayMoney(p.precio) }}</td>
                             </tr>
                             <tr v-if="!loading && productos.length === 0">
-                                <td colspan="5" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
+                                <td colspan="6" class="px-3 py-3 text-center text-gray-500">Sin resultados</td>
                             </tr>
                             <tr v-if="loading">
-                                <td colspan="5" class="px-3 py-3 text-center text-gray-500">Cargando…</td>
+                                <td colspan="6" class="px-3 py-3 text-center text-gray-500">Cargando…</td>
                             </tr>
                         </tbody>
                     </table>

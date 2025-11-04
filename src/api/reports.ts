@@ -112,6 +112,85 @@ export interface InventarioReportResponse {
     pagination: ProductosPagination;
 }
 
+// ---------------------
+// REPORT ENTRADAS
+// ---------------------
+
+export interface EntradaRow {
+    id: number;
+    fecha: string;
+    fecha_raw: string;
+    fecha_iso: string;
+    prodid: string;
+    prodnombre: string;
+    proveedor_ident: string | null;
+    proveedor_nombre: string | null;
+    ingreal: number;
+    accion_code: number;
+    accion: string;
+    usuario: string | null;
+}
+
+export interface EntradasReportResponse {
+    from_date: string;
+    to_date: string;
+    entradas: EntradaRow[];
+}
+
+// ---------------------
+// REPORT CAJA PROVEEDORES (CONDENSADO)
+// ---------------------
+
+export interface CajaProveedorItem {
+    ventadesg_id: number;
+    idventa: number;
+    venta_id: number;
+    fecha: string;
+    fecha_raw: string;
+    fecha_iso: string;
+    producto_ident: string;
+    producto_nombre: string;
+    cantidad: number;
+    precio_unitario: number;
+    total: number;
+    descuento_producto: number;
+    cargo_tarjeta: number;
+    descuento_total: number;
+    ganancia: number;
+    metodo: string;
+    vendedor: string;
+    venta_total: number;
+    promotion?: string | null;
+}
+
+export interface CajaProveedorGroup {
+    proveedor_id: number;
+    proveedor_ident: string;
+    proveedor_nombre: string;
+    ventas_brutas: number;
+    descuentos: number;
+    cargos_tarjeta: number;
+    ganancia_total: number;
+    items: CajaProveedorItem[];
+}
+
+export interface CajaProveedoresResumen {
+    ventas_brutas: number;
+    descuentos: number;
+    cargos_tarjeta: number;
+    descuento_general: number;
+    ganancias: number;
+}
+
+export interface CajaProveedoresResponse {
+    from_date: string;
+    to_date: string;
+    resumen: CajaProveedoresResumen;
+    descuento_general_total: number;
+    cargos_tarjeta_total: number;
+    proveedores: CajaProveedorGroup[];
+}
+
 // --- Productos API call (standardized to `http`) ---
 export async function getProductosReport(opts: {
     q?: string;
@@ -143,5 +222,27 @@ export async function getInventarioReport(opts: {
     if (opts.direction) params.direction = opts.direction;
 
     const { data } = await http.get<InventarioReportResponse>('/reports/inventario', { params });
+    return data;
+}
+
+export async function getEntradasReport(params: { from_date: string; to_date: string }) {
+    const { from_date, to_date } = params;
+    const query: Record<string, string> = { from_date, to_date };
+    const { data } = await http.get<EntradasReportResponse>('/reports/entradas', { params: query });
+    return data;
+}
+
+export async function getCajaProveedoresReport(params: { from_date: string; to_date?: string; download?: boolean }) {
+    const query: Record<string, string | number> = { from_date: params.from_date };
+    if (params.to_date) query.to_date = params.to_date;
+    if (params.download) query.download = 1;
+    if (params.download) {
+        const { data } = await http.get('/reports/caja-proveedores', {
+            params: query,
+            responseType: 'blob',
+        });
+        return data as Blob;
+    }
+    const { data } = await http.get<CajaProveedoresResponse>('/reports/caja-proveedores', { params: query });
     return data;
 }
