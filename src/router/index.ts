@@ -17,9 +17,9 @@ const AdminCobros = () => import("../views/AdminCobros.vue");
 const AdminReportsView = () => import("../views/AdminReportsView.vue");
 
 const routes: RouteRecordRaw[] = [
-    { path: "/", redirect: "/auth" },
+    { path: "/", redirect: "/auth/login" },
     {
-        path: "/auth",
+        path: "/auth/login",
         name: "login",
         component: LoginView,
         meta: { public: true },
