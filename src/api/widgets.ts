@@ -24,7 +24,6 @@ export async function getCashierSummary(fecha?: string) {
     const { data } = await http.get<CashierSummaryResponse>('/widgets/cashier-summary', {
         params: fecha ? { fecha } : undefined,
     });
-    console.log('Cashier Summary Data:', data);
     return data;
 }
 

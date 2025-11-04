@@ -167,9 +167,9 @@ const providerPercentages = computed(() => {
     const sumCantidad = Array.from(totals.values()).reduce((acc, item) => acc + item.cantidad, 0);
     if (!sumCantidad) return new Map<number, number>();
     const percentMap = new Map<number, number>();
-    for (const [pid, info] of totals.entries()) {
+    totals.forEach((info, pid) => {
         percentMap.set(pid, info.cantidad / sumCantidad);
-    }
+    });
     return percentMap;
 });
 
@@ -219,11 +219,14 @@ const providerSurcharge = computed(() => {
     }
     let remainder = Math.round((surchargeAmount.value - totalAllocated) * 100) / 100;
     if (remainder !== 0 && ordered.length) {
-        const [pid] = ordered[0];
-        const current = allocations.get(pid) ?? 0;
-        allocations.set(pid, Math.round((current + remainder) * 100) / 100);
-        totalAllocated += remainder;
-        remainder = 0;
+        const firstEntry = ordered[0];
+        if (firstEntry) {
+            const [pid] = firstEntry;
+            const current = allocations.get(pid) ?? 0;
+            allocations.set(pid, Math.round((current + remainder) * 100) / 100);
+            totalAllocated += remainder;
+            remainder = 0;
+        }
     }
     providerSurchargeRemainder.value = remainder;
     return allocations;
@@ -233,9 +236,15 @@ const providerNetAfterSurcharge = computed(() => {
     const totals = providerTotals.value;
     const surcharges = providerSurcharge.value;
     const result = new Map<number, number>();
-    for (const [pid, info] of totals.entries()) {
-        const surcharge = surcharges.get(pid) ?? 0;
-        result.set(pid, Math.max(0, info.total - surcharge));
+    if (surcharges instanceof Map) {
+        for (const [pid, info] of totals.entries()) {
+            const surcharge = surcharges.get(pid) ?? 0;
+            result.set(pid, Math.max(0, info.total - surcharge));
+        }
+    } else {
+        for (const [pid, info] of totals.entries()) {
+            result.set(pid, info.total);
+        }
     }
     return result;
 });

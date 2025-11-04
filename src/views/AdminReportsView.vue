@@ -15,7 +15,6 @@ import {
     type InventarioReportResponse,
     type InventarioRow,
     type EntradasReportResponse,
-    type EntradaRow,
     type CajaProveedoresResponse,
     type CajaProveedorGroup,
 } from '../api/reports';
