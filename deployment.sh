@@ -2,7 +2,7 @@
 set -eo pipefail
 
 # ---- Update this if your project lives elsewhere ----
-SITE_DIR="/home/forge/rosamexicano25.on-forge.com/current"
+SITE_DIR="/home/forge/rmshowroom.on-forge.com/current"
 # -----------------------------------------------------
 
 echo "==> Deploying to $SITE_DIR"

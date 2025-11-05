@@ -1,19 +1,19 @@
-# /etc/nginx/sites-available/rosamexicano25.on-forge.com
+# /etc/nginx/sites-available/rmshowroom.on-forge.com
 
 server {
     listen 80;
     listen [::]:80;
-    server_name rosamexicano25.on-forge.com;
+    server_name rmshowroom.on-forge.com;
 
-    root /home/forge/rosamexicano25.on-forge.com/current/dist;
+    root /home/forge/rmshowroom.on-forge.com/current/dist;
     index index.html;
 
     # Allow Forge to manage SSL; uncomment if you’ve provisioned certificates
-    # include /etc/nginx/ssl/rosamexicano25.on-forge.com/ssl.conf;
+    # include /etc/nginx/ssl/rmshowroom.on-forge.com/ssl.conf;
 
     # log locations (optional)
-    access_log /var/log/nginx/rosamexicano25.on-forge.com_access.log;
-    error_log  /var/log/nginx/rosamexicano25.on-forge.com_error.log warn;
+    access_log /var/log/nginx/rmshowroom.on-forge.com_access.log;
+    error_log  /var/log/nginx/rmshowroom.on-forge.com_error.log warn;
 
     # Serve existing files directly, otherwise fall back to SPA entry point
     location / {
