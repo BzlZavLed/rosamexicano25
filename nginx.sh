@@ -1,43 +1,26 @@
-# /etc/nginx/sites-available/rmshowroom.on-forge.com
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+ssl_prefer_server_ciphers off;
+ssl_dhparam /etc/nginx/dhparams.pem;
 
-server {
-    listen 80;
-    listen [::]:80;
-    server_name rmshowroom.on-forge.com;
+add_header X-Frame-Options "SAMEORIGIN";
+add_header X-XSS-Protection "1; mode=block";
+add_header X-Content-Type-Options "nosniff";
+index index.html index.htm;
+location / {
+    try_files $uri $uri/ =404;
+}
 
-    root /home/forge/rmshowroom.on-forge.com/current/dist;
-    index index.html;
 
-    # Allow Forge to manage SSL; uncomment if you’ve provisioned certificates
-    # include /etc/nginx/ssl/rmshowroom.on-forge.com/ssl.conf;
+# FORGE CONFIG (DO NOT REMOVE!)
+include forge-conf/2918712/server/*;
 
-    # log locations (optional)
-    access_log /var/log/nginx/rmshowroom.on-forge.com_access.log;
-    error_log  /var/log/nginx/rmshowroom.on-forge.com_error.log warn;
+location = /favicon.ico { access_log off; log_not_found off; }
+location = /robots.txt  { access_log off; log_not_found off; }
 
-    # Serve existing files directly, otherwise fall back to SPA entry point
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
+access_log off;
+error_log  /var/log/nginx/2918712-error.log error;
 
-    # Helpful cache headers for static assets
-    location ~* \.(?:css|js|mjs|json|txt|xml|ico|svg|eot|ttf|woff|woff2)$ {
-        add_header Cache-Control "public, max-age=31536000, immutable";
-        try_files $uri /index.html;
-    }
-
-    # Optional: gzip (enabled by default on Forge, but explicit here)
-    gzip on;
-    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
-    gzip_proxied any;
-    gzip_min_length 1024;
-
-    # Allow large uploads if needed
-    client_max_body_size 10M;
-
-    # Nginx health-check endpoint
-    location = /health {
-        access_log off;
-        return 200 'OK';
-    }
+location ~ /\.(?!well-known).* {
+    deny all;
 }

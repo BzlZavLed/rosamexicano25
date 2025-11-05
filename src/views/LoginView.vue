@@ -31,8 +31,7 @@ onMounted(() => {
 </script>
 
 <template>
-    <!-- Optional: keep your nav; remove if you want a clean login screen -->
-    <AppNav />
+
 
     <!-- Brand gradient backdrop using #E4007C -->
     <div class="min-h-screen flex items-center justify-center bg-gradient-to-b from-white to-[#ffe5f2] px-4 py-8">
